@@ -2792,19 +2792,20 @@ impl Ashell {
         &self,
         range_utf16: Range<usize>,
         element_bounds: Bounds<Pixels>,
-        window: &Window,
+        cell_width: f32,
+        line_height: f32,
     ) -> Option<Bounds<Pixels>> {
         let snapshot = self.active_snapshot()?;
         let cursor = snapshot.cursor?;
         let x = element_bounds.origin.x
-            + px(self.terminal_cell_width(window)) * cursor.col as f32
-            + px(self.terminal_cell_width(window)) * range_utf16.start as f32;
-        let y = element_bounds.origin.y + px(self.terminal_line_height()) * cursor.row as f32;
+            + px(cell_width) * cursor.col as f32
+            + px(cell_width) * range_utf16.start as f32;
+        let y = element_bounds.origin.y + px(line_height) * cursor.row as f32;
         Some(Bounds::new(
             point(x, y),
             size(
-                px(self.terminal_cell_width(window)),
-                px(self.terminal_line_height()),
+                px(cell_width),
+                px(line_height),
             ),
         ))
     }

@@ -144,6 +144,8 @@ pub struct PrepaintState {
 struct TerminalInputHandler {
     view: Entity<Ashell>,
     element_bounds: Bounds<Pixels>,
+    cell_width: f32,
+    line_height: f32,
 }
 
 impl InputHandler for TerminalInputHandler {
@@ -219,7 +221,7 @@ impl InputHandler for TerminalInputHandler {
     ) -> Option<Bounds<Pixels>> {
         self.view
             .read(cx)
-            .terminal_ime_bounds_for_range(range_utf16, self.element_bounds, _window)
+            .terminal_ime_bounds_for_range(range_utf16, self.element_bounds, self.cell_width, self.line_height)
     }
 
     fn character_index_for_point(
@@ -492,6 +494,8 @@ impl Element for TerminalElement {
             TerminalInputHandler {
                 view: self.view.clone(),
                 element_bounds: prepaint.bounds,
+                cell_width: prepaint.metrics.cell_width.as_f32(),
+                line_height: prepaint.metrics.line_height.as_f32(),
             },
             cx,
         );
