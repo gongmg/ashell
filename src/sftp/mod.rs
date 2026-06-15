@@ -379,16 +379,26 @@ async fn run_sftp(
                         }
                         Err(err) => {
                             let err_msg = format!("{err:#}");
+                            let is_cancelled = err_msg.contains("transfer cancelled");
+                            let state = if is_cancelled {
+                                crate::terminal::TransferState::Interrupted("User cancelled".to_string())
+                            } else {
+                                crate::terminal::TransferState::Failed(err_msg.clone())
+                            };
                             let _ = events_clone.send(BackendEvent::SftpStatus {
                                 tab_id: tab_id_clone.clone(),
-                                text: t!("download_failed", err = err_msg.clone()).to_string(),
+                                text: if is_cancelled { 
+                                    "Transmission cancelled".to_string()
+                                } else { 
+                                    t!("download_failed", err = err_msg.clone()).to_string() 
+                                },
                             });
                             let _ = events_clone.send(BackendEvent::TransferProgress {
                                 tab_id: tab_id_clone,
                                 id: id.clone(),
                                 transferred: 0,
                                 total: None,
-                                state: crate::terminal::TransferState::Failed(err_msg),
+                                state,
                             });
                         }
                     }
@@ -480,16 +490,26 @@ async fn run_sftp(
                         }
                         Err(err) => {
                             let err_msg = format!("{err:#}");
+                            let is_cancelled = err_msg.contains("transfer cancelled");
+                            let state = if is_cancelled {
+                                crate::terminal::TransferState::Interrupted("User cancelled".to_string())
+                            } else {
+                                crate::terminal::TransferState::Failed(err_msg.clone())
+                            };
                             let _ = events_clone.send(BackendEvent::SftpStatus {
                                 tab_id: tab_id_clone.clone(),
-                                text: t!("upload_failed", err = err_msg.clone()).to_string(),
+                                text: if is_cancelled { 
+                                    "Transmission cancelled".to_string()
+                                } else { 
+                                    t!("upload_failed", err = err_msg.clone()).to_string() 
+                                },
                             });
                             let _ = events_clone.send(BackendEvent::TransferProgress {
                                 tab_id: tab_id_clone,
                                 id: id.clone(),
                                 transferred: 0,
                                 total: None,
-                                state: crate::terminal::TransferState::Failed(err_msg),
+                                state,
                             });
                         }
                     }
@@ -1123,6 +1143,12 @@ async fn download_path_impl(
         .await
         .with_context(|| format!("create {}", local_dir.display()))?;
 
+    // Check for cancellation after initial setup
+    let state = flag.0.load(Ordering::SeqCst);
+    if state == 2 {
+        return Err(anyhow::anyhow!("transfer cancelled"));
+    }
+
     let metadata = sftp
         .metadata(remote)
         .await
@@ -1216,7 +1242,15 @@ async fn download_remote_directory_archive(
         base_name(remote_dir),
         Uuid::new_v4()
     );
+
+    // Check for cancellation before creating remote archive
+    let state = flag.0.load(Ordering::SeqCst);
+    if state == 2 {
+        return Err(anyhow::anyhow!("transfer cancelled"));
+    }
+
     create_remote_archive(handle, remote_dir, &remote_archive).await?;
+
     let local_extract_root = local_archive
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -1322,6 +1356,12 @@ async fn upload_paths_impl(
     tab_id: &str,
     id: &str,
 ) -> Result<String> {
+    // Check for cancellation before starting
+    let state = flag.0.load(Ordering::SeqCst);
+    if state == 2 {
+        return Err(anyhow::anyhow!("transfer cancelled"));
+    }
+
     create_remote_dir_all(sftp, remote_dir).await?;
     let mut file_count = 0usize;
     let mut folder_count = 0usize;
@@ -1374,8 +1414,19 @@ async fn upload_paths_impl(
         }
     }
 
+    // Check for cancellation before creating directories
+    let state = flag.0.load(Ordering::SeqCst);
+    if state == 2 {
+        return Err(anyhow::anyhow!("transfer cancelled"));
+    }
+
     // Create directories sequentially first
     for dir in dirs_to_create {
+        // Check for cancellation between each directory creation
+        let state = flag.0.load(Ordering::SeqCst);
+        if state == 2 {
+            return Err(anyhow::anyhow!("transfer cancelled"));
+        }
         create_remote_dir_all(sftp, &dir).await?;
     }
 
@@ -1543,14 +1594,31 @@ async fn exec_remote_command(
     let mut stderr = Vec::new();
     let mut stdout = Vec::new();
     let mut exit_status = None;
-    while let Some(msg) = channel.wait().await {
-        match msg {
-            russh::ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
-            russh::ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
-            russh::ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
-            russh::ChannelMsg::Close => break,
-            _ => {}
+    
+    // Add timeout to prevent indefinite blocking (300 seconds = 5 minutes)
+    let timeout = tokio::time::Duration::from_secs(300);
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            // Yield to allow cancellation
+            tokio::task::yield_now().await;
+            
+            if let Some(msg) = channel.wait().await {
+                match msg {
+                    russh::ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+                    russh::ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+                    russh::ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
+                    russh::ChannelMsg::Close => break,
+                    _ => {}
+                }
+            } else {
+                break;
+            }
         }
+    })
+    .await;
+
+    if result.is_err() {
+        return Err(anyhow!("remote command timeout: {command}"));
     }
 
     match exit_status.unwrap_or(0) {
@@ -1713,6 +1781,8 @@ async fn extract_archive_to(path: &Path, target_dir: &Path) -> Result<()> {
 
     Ok(())
 }
+
+
 
 #[derive(Clone)]
 struct SftpClientHandler;

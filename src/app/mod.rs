@@ -440,7 +440,15 @@ impl Ashell {
             sftp_new_folder_input,
             sftp_delete_scroll_handle: gpui::ScrollHandle::new(),
             show_hidden_files: config.show_hidden_files(),
-            transfers: config.transfers(),
+            transfers: {
+                let mut transfers = config.transfers();
+                for t in transfers.iter_mut() {
+                    if matches!(t.state, crate::terminal::TransferState::Running | crate::terminal::TransferState::Paused) {
+                        t.state = crate::terminal::TransferState::Zombie(t!("zombie_reason").to_string());
+                    }
+                }
+                transfers
+            },
             show_transfers_dialog: false,
             system_status: None,
             terminal_bounds: HashMap::new(),
@@ -854,4 +862,12 @@ impl Ashell {
             size(px(cell_width), px(line_height)),
         ))
     }
+
+    pub(crate) fn remove_transfer(&mut self, transfer_id: &str, cx: &mut Context<Self>) {
+        self.transfers.retain(|t| t.info.id != transfer_id);
+        self.config.set_transfers(self.transfers.clone());
+        cx.notify();
+    }
+
+
 }

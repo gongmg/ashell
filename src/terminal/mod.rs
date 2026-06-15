@@ -684,7 +684,8 @@ pub enum TransferState {
     Paused,
     Completed,
     Failed(String),
-    Cancelled,
+    Interrupted(String), // 中断传输：包含原因（例如 "User cancelled", "Network timeout"）
+    Zombie(String),      // 程序重启后残留的 Running/Paused 任务
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

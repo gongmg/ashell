@@ -516,7 +516,10 @@ impl Ashell {
                                         format_bytes(tot)
                                     )
                                 } else {
-                                    format!("{}...", t!("downloading"))
+                                    match t.info.kind {
+                                        crate::terminal::TransferType::Upload => format!("{}...", t!("uploading")),
+                                        crate::terminal::TransferType::Download => format!("{}...", t!("downloading")),
+                                    }
                                 };
                                 let btn_pause =
                                     Button::new(SharedString::from(format!("pause-{}", t.info.id)))
@@ -582,6 +585,23 @@ impl Ashell {
                                 }));
                                 (txt, h_flex().gap_1().child(btn_resume).child(btn_cancel))
                             }
+                            crate::terminal::TransferState::Interrupted(ref reason) => {
+                                let txt = format!("{}: {}", t!("interrupted"), reason);
+                                let btn_remove = Button::new(SharedString::from(format!(
+                                    "remove-{}",
+                                    t.info.id
+                                )))
+                                .ghost()
+                                .small()
+                                .icon(IconName::Close)
+                                .on_click(window.listener_for(&view, {
+                                    let id = t.info.id.clone();
+                                    move |this, _, _, cx| {
+                                        this.remove_transfer(&id, cx);
+                                    }
+                                }));
+                                (txt, h_flex().gap_1().child(btn_remove))
+                            }
                             crate::terminal::TransferState::Completed => {
                                 let txt = t!("completed").to_string();
                                 let mut actions = h_flex().gap_1();
@@ -603,13 +623,55 @@ impl Ashell {
                                     });
                                     actions = actions.child(btn_folder);
                                 }
+                                let btn_remove = Button::new(SharedString::from(format!(
+                                    "remove-{}",
+                                    t.info.id
+                                )))
+                                .ghost()
+                                .small()
+                                .icon(IconName::Close)
+                                .on_click(window.listener_for(&view, {
+                                    let id = t.info.id.clone();
+                                    move |this, _, _, cx| {
+                                        this.remove_transfer(&id, cx);
+                                    }
+                                }));
+                                actions = actions.child(btn_remove);
                                 (txt, actions)
                             }
                             crate::terminal::TransferState::Failed(ref err) => {
-                                (format!("{}: {}", t!("failed"), err), h_flex().gap_1())
+                                let txt = format!("{}: {}", t!("failed"), err);
+                                let btn_remove = Button::new(SharedString::from(format!(
+                                    "remove-{}",
+                                    t.info.id
+                                )))
+                                .ghost()
+                                .small()
+                                .icon(IconName::Close)
+                                .on_click(window.listener_for(&view, {
+                                    let id = t.info.id.clone();
+                                    move |this, _, _, cx| {
+                                        this.remove_transfer(&id, cx);
+                                    }
+                                }));
+                                (txt, h_flex().gap_1().child(btn_remove))
                             }
-                            crate::terminal::TransferState::Cancelled => {
-                                (t!("cancelled").to_string(), h_flex().gap_1())
+                            crate::terminal::TransferState::Zombie(ref reason) => {
+                                let txt = format!("{}: {}", t!("zombie"), reason);
+                                let btn_remove = Button::new(SharedString::from(format!(
+                                    "remove-{}",
+                                    t.info.id
+                                )))
+                                .ghost()
+                                .small()
+                                .icon(IconName::Close)
+                                .on_click(window.listener_for(&view, {
+                                    let id = t.info.id.clone();
+                                    move |this, _, _, cx| {
+                                        this.remove_transfer(&id, cx);
+                                    }
+                                }));
+                                (txt, h_flex().gap_1().child(btn_remove))
                             }
                         };
 
@@ -665,13 +727,13 @@ impl Ashell {
                                                         t!("session"),
                                                         t.tab_title
                                                     )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(status_text.clone()),
                                             ),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(11.))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(status_text),
                                     )
                                     .child(actions),
                             )
@@ -691,6 +753,7 @@ impl Ashell {
                                     )
                                 },
                             )
+
                     }));
 
                     let scroll_handle = window
