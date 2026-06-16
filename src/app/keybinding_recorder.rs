@@ -17,6 +17,7 @@ gpui::actions!(
         OpenSettings,
         OpenSession,
         NewSsh,
+        ToggleSidebar,
         ToggleSftpZoom,
         FocusPaneLeft,
         FocusPaneRight,
@@ -54,6 +55,11 @@ pub(crate) const WORKSPACE_ACTIONS: &[WorkspaceAction] = &[
         id: "NewSsh",
         label_key: "settings_new_ssh",
         default_suffix: "n",
+    },
+    WorkspaceAction {
+        id: "ToggleSidebar",
+        label_key: "settings_toggle_sidebar",
+        default_suffix: "s",
     },
     WorkspaceAction {
         id: "ToggleSftpZoom",
@@ -193,6 +199,7 @@ pub(crate) fn unbind_all_workspace_keys(cx: &mut App, config: &ConfigStore) {
     unbind_action!("OpenSettings", crate::OpenSettings);
     unbind_action!("OpenSession", crate::OpenSession);
     unbind_action!("NewSsh", crate::NewSsh);
+    unbind_action!("ToggleSidebar", crate::ToggleSidebar);
     unbind_action!("ToggleSftpZoom", crate::ToggleSftpZoom);
     unbind_action!("FocusPaneLeft", crate::FocusPaneLeft);
     unbind_action!("FocusPaneRight", crate::FocusPaneRight);
@@ -246,6 +253,7 @@ fn bind_workspace_actions(cx: &mut App, config: &ConfigStore) {
     bind_action!("OpenSettings", crate::OpenSettings);
     bind_action!("OpenSession", crate::OpenSession);
     bind_action!("NewSsh", crate::NewSsh);
+    bind_action!("ToggleSidebar", crate::ToggleSidebar);
     bind_action!("ToggleSftpZoom", crate::ToggleSftpZoom);
     bind_action!("FocusPaneLeft", crate::FocusPaneLeft);
     bind_action!("FocusPaneRight", crate::FocusPaneRight);

@@ -17,6 +17,7 @@ gpui::actions!(ashell_terminal, [TerminalTabKey, TerminalBacktabKey]);
 pub(crate) use app::keybinding_recorder::{
     ClosePane, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NewSsh, OpenSession,
     OpenSettings, SplitPaneDown, SplitPaneLeft, SplitPaneRight, SplitPaneUp, ToggleSftpZoom,
+    ToggleSidebar,
 };
 
 pub(crate) use app::{

@@ -21,7 +21,7 @@ use rust_i18n::t;
 
 use crate::{
     Ashell, PaneLayout,
-    app::constants::{SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
+    app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
@@ -1517,6 +1517,15 @@ impl Ashell {
                             )
                             .child(div().flex_1())
                             .child(
+                                Button::new("sidebar-collapse-toggle")
+                                    .ghost()
+                                    .icon(IconName::PanelLeftClose)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sidebar_collapsed = true;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
                                 Button::new("sidebar-settings")
                                     .ghost()
                                     .icon(IconName::Settings)
@@ -1709,6 +1718,151 @@ impl Ashell {
                                             gpui_component::scroll::ScrollbarShow::Always,
                                         ),
                                     ),
+                            ),
+                    ),
+            )
+    }
+
+    fn render_collapsed_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let sessions = self.config.sessions().to_vec();
+        let active_session_id = self.active_session_id().map(ToOwned::to_owned);
+
+        v_flex()
+            .w_full()
+            .h_full()
+            .min_w(px(0.))
+            .p_2()
+            .border_r_1()
+            .border_color(cx.theme().sidebar_border)
+            .bg(cx.theme().sidebar)
+            .overflow_hidden()
+            .items_center()
+            // Top: expand button only
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .pb_2()
+                    .child(
+                        Button::new("sidebar-expand-toggle")
+                            .ghost()
+                            .icon(IconName::PanelLeftOpen)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sidebar_collapsed = false;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            // Saved sessions as compact cards
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .w_full()
+                    .child(
+                        v_flex()
+                            .size_full()
+                            .id("collapsed-saved-sessions-scroll")
+                            .track_scroll(&self.collapsed_saved_scroll_handle)
+                            .overflow_y_scroll()
+                            .gap_2()
+                            .items_center()
+                            .children(sessions.into_iter().enumerate().map(
+                                |(ix, session)| {
+                                    let connect_id = session.id.clone();
+                                    let is_active = active_session_id.as_deref()
+                                        == Some(session.id.as_str());
+                                    let name = session.name.clone();
+
+                                    // Abbreviate: first 1 char for CJK, first 2 chars for Latin
+                                    let abbrev = {
+                                        let mut chars = name.chars();
+                                        if let Some(first) = chars.next() {
+                                            if first > '\u{2E7F}' {
+                                                // CJK character range — show 1 char
+                                                first.to_string()
+                                            } else {
+                                                // Latin / ASCII — show first 2 chars
+                                                let mut s = first.to_string();
+                                                if let Some(second) = chars.next() {
+                                                    s.push(second);
+                                                }
+                                                s
+                                            }
+                                        } else {
+                                            "?".to_string()
+                                        }
+                                    };
+
+                                    div()
+                                        .id(("collapsed-saved", ix))
+                                        .w(px(36.))
+                                        .h(px(36.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(if is_active {
+                                            cx.theme().primary
+                                        } else {
+                                            cx.theme().border
+                                        })
+                                        .bg(if is_active {
+                                            cx.theme().tab_active
+                                        } else {
+                                            cx.theme().muted
+                                        })
+                                        .cursor_pointer()
+                                        .hover(|this| this.bg(cx.theme().secondary))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.connect_saved_session(
+                                                    connect_id.clone(),
+                                                    cx,
+                                                )
+                                            }),
+                                        )
+                                        .tooltip({
+                                            let tooltip_text = format!("{} {}", name, session.user);
+                                            move |window, cx| {
+                                                gpui_component::tooltip::Tooltip::new(tooltip_text.clone()).build(window, cx)
+                                            }
+                                        })
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.833))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(if is_active {
+                                                    cx.theme().primary
+                                                } else {
+                                                    cx.theme().foreground
+                                                })
+                                                .child(abbrev),
+                                        )
+                                },
+                            )),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left_0()
+                            .right_0()
+                            .child(
+                                gpui_component::scroll::Scrollbar::new(
+                                    &self.collapsed_saved_scroll_handle,
+                                )
+                                .id("collapsed-saved-scrollbar")
+                                .axis(gpui_component::scroll::ScrollbarAxis::Vertical)
+                                .scrollbar_show(
+                                    gpui_component::scroll::ScrollbarShow::Scrolling,
+                                ),
                             ),
                     ),
             )
@@ -2187,16 +2341,6 @@ impl Render for Ashell {
             }
         }
 
-        let sidebar_area = resizable_panel()
-            .size(px(self
-                .config
-                .workspace_panels()
-                .and_then(|s| s.first().copied())
-                .unwrap_or(SIDEBAR_WIDTH)))
-            .size_range(px(240.)..px(520.))
-            .flex_none()
-            .child(self.sidebar(cx));
-
         let monitoring_contents = v_flex()
             .size_full()
             .when(self.config.monitoring_position() == "Bottom", |this| {
@@ -2236,19 +2380,57 @@ impl Render for Ashell {
             )
             .into_any_element();
 
-        let main_area = resizable_panel().child(
-            v_flex()
+        let workspace = if self.sidebar_collapsed {
+            h_flex()
                 .size_full()
-                .relative()
-                .overflow_hidden()
-                .child(self.render_tab_bar(cx))
-                .child(body_panel),
-        );
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(COLLAPSED_SIDEBAR_WIDTH))
+                        .h_full()
+                        .child(self.render_collapsed_sidebar(cx)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .min_w(px(0.))
+                        .child(
+                            v_flex()
+                                .size_full()
+                                .relative()
+                                .overflow_hidden()
+                                .child(self.render_tab_bar(cx))
+                                .child(body_panel),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            let sidebar_area = resizable_panel()
+                .size(px(self
+                    .config
+                    .workspace_panels()
+                    .and_then(|s| s.first().copied())
+                    .unwrap_or(SIDEBAR_WIDTH)))
+                .size_range(px(240.)..px(520.))
+                .flex_none()
+                .child(self.sidebar(cx));
 
-        let workspace = h_resizable("ashell-workspace")
-            .with_state(&self.workspace_panels)
-            .child(sidebar_area)
-            .child(main_area);
+            let main_area = resizable_panel().child(
+                v_flex()
+                    .size_full()
+                    .relative()
+                    .overflow_hidden()
+                    .child(self.render_tab_bar(cx))
+                    .child(body_panel),
+            );
+
+            h_resizable("ashell-workspace")
+                .with_state(&self.workspace_panels)
+                .child(sidebar_area)
+                .child(main_area)
+                .into_any_element()
+        };
 
         div()
             .id("ashell-root")
@@ -2259,6 +2441,10 @@ impl Render for Ashell {
             .on_action(cx.listener(|this, _: &crate::OpenSettings, window, cx| this.show_settings_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &crate::OpenSession, window, cx| this.show_selector_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &crate::NewSsh, window, cx| this.show_ssh_dialog(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::ToggleSidebar, _, cx| {
+                this.sidebar_collapsed = !this.sidebar_collapsed;
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &crate::ToggleSftpZoom, window, cx| {
                 this.toggle_sftp_minimized(window, cx);
             }))
