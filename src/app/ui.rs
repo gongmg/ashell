@@ -1825,6 +1825,8 @@ impl Ashell {
                                         }
                                     };
 
+                                    let edit_id = session.id.clone();
+                                    let delete_id = session.id.clone();
                                     div()
                                         .id(("collapsed-saved", ix))
                                         .w(px(36.))
@@ -1859,6 +1861,58 @@ impl Ashell {
                                             let tooltip_text = format!("{} {}", name, session.user);
                                             move |window, cx| {
                                                 gpui_component::tooltip::Tooltip::new(tooltip_text.clone()).build(window, cx)
+                                            }
+                                        })
+                                        .context_menu({
+                                            let view = cx.entity();
+                                            move |menu, window, _| {
+                                                let edit_value = edit_id.clone();
+                                                let clone_value = edit_id.clone();
+                                                let delete_value = delete_id.clone();
+                                                menu.item(
+                                                    PopupMenuItem::new(
+                                                        t!("clone").to_string(),
+                                                    )
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        move |this, _, window, cx| {
+                                                            this.clone_saved_session(
+                                                                clone_value.clone(),
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                                )
+                                                .item(
+                                                    PopupMenuItem::new(
+                                                        t!("edit").to_string(),
+                                                    )
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        move |this, _, window, cx| {
+                                                            this.edit_saved_session(
+                                                                edit_value.clone(),
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                                )
+                                                .item(
+                                                    PopupMenuItem::new(
+                                                        t!("delete").to_string(),
+                                                    )
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        move |this, _, _, cx| {
+                                                            this.remove_saved_session(
+                                                                delete_value.clone(),
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
+                                                )
                                             }
                                         })
                                         .child(
