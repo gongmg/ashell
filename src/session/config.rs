@@ -128,7 +128,7 @@ pub enum TitleBarStyle {
     Integrated,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigFile {
     #[serde(default = "default_follow_system_theme")]
     pub follow_system_theme: bool,
@@ -232,6 +232,45 @@ pub fn default_ui_font_family() -> String {
 
 fn default_terminal_font_family() -> String {
     "Maple Mono NF CN".to_string()
+}
+
+impl Default for ConfigFile {
+    fn default() -> Self {
+        Self {
+            follow_system_theme: default_follow_system_theme(),
+            theme_mode: String::new(),
+            light_theme_name: String::new(),
+            dark_theme_name: String::new(),
+            locale: default_locale(),
+            terminal_font_size: default_terminal_font_size(),
+            ui_font_size: default_ui_font_size(),
+            right_click_copy_paste: false,
+            keyword_highlight: false,
+            ui_font_family: default_ui_font_family(),
+            terminal_font_family: default_terminal_font_family(),
+            title_bar_style: TitleBarStyle::default(),
+            sessions: Vec::new(),
+            window_bounds: None,
+            workspace_panels: None,
+            body_panels: None,
+            transfers: Vec::new(),
+            show_hidden_files: false,
+            monitoring_position: default_monitoring_position(),
+            sidebar_collapsed: false,
+            sftp_panel_minimized: false,
+            key_bindings: std::collections::HashMap::new(),
+            sync_endpoint: String::new(),
+            sync_username: String::new(),
+            sync_etag: None,
+            sync_device_id: String::new(),
+            sync_backend: String::new(),
+            sync_etag_backend: String::new(),
+            sync_s3_endpoint: String::new(),
+            sync_s3_region: default_s3_region(),
+            sync_s3_bucket: String::new(),
+            sync_s3_object_key: default_s3_object_key(),
+        }
+    }
 }
 
 pub struct ConfigStore {
