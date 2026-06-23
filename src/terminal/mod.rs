@@ -356,7 +356,12 @@ impl TerminalTab {
         RenderSnapshot {
             cells,
             cursor: self.cursor_state(),
-            selection: viewport_selection_from_range(content.display_offset, &content.selection),
+            selection: viewport_selection_from_range(
+                content.display_offset,
+                self.rows as usize,
+                self.cols as usize,
+                &content.selection,
+            ),
             display_offset: content.display_offset,
             history_size: self.term.grid().history_size(),
             rows: self.rows as usize,
@@ -469,6 +474,8 @@ impl TerminalTab {
 
 fn viewport_selection_from_range(
     display_offset: usize,
+    rows: usize,
+    cols: usize,
     selection: &Option<SelectionRange>,
 ) -> Option<ViewportSelection> {
     let SelectionRange {
@@ -476,14 +483,34 @@ fn viewport_selection_from_range(
         end,
         is_block,
     } = selection.as_ref().copied()?;
-    let start = point_to_viewport(display_offset, start)?;
-    let end = point_to_viewport(display_offset, end)?;
+
+    let top_point = viewport_to_point(display_offset, Point::new(0, Column(0)));
+    let bottom_point = viewport_to_point(display_offset, Point::new(rows.saturating_sub(1), Column(0)));
+
+    let top_line = top_point.line;
+    let bottom_line = bottom_point.line;
+
+    let start_vp = if start.line < top_line {
+        Point::new(0, Column(0))
+    } else if start.line > bottom_line {
+        Point::new(rows.saturating_sub(1), Column(cols.saturating_sub(1)))
+    } else {
+        point_to_viewport(display_offset, start).unwrap_or(Point::new(0, Column(0)))
+    };
+
+    let end_vp = if end.line < top_line {
+        Point::new(0, Column(0))
+    } else if end.line > bottom_line {
+        Point::new(rows.saturating_sub(1), Column(cols.saturating_sub(1)))
+    } else {
+        point_to_viewport(display_offset, end).unwrap_or(Point::new(rows.saturating_sub(1), Column(cols.saturating_sub(1))))
+    };
 
     Some(ViewportSelection {
-        start_row: start.line,
-        start_col: start.column.0,
-        end_row: end.line,
-        end_col: end.column.0,
+        start_row: start_vp.line,
+        start_col: start_vp.column.0,
+        end_row: end_vp.line,
+        end_col: end_vp.column.0,
         is_block,
     })
 }
