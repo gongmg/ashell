@@ -2365,6 +2365,56 @@ impl Ashell {
                     ));
                 let scrollbar = this.terminal_scrollbars.entry(tab_id.clone()).or_default();
                 el = el.vertical_scrollbar(scrollbar);
+
+                // When disconnected, overlay a reconnect bar at the bottom of the terminal.
+                // Uses absolute positioning so the terminal element itself is unchanged,
+                // keeping panel size stable in multi-panel layouts.
+                let disconnected_reason = this
+                    .tabs
+                    .iter()
+                    .find(|t| t.id == *tab_id)
+                    .and_then(|tab| tab.disconnected_reason.clone());
+                if let Some(reason) = disconnected_reason {
+                    let tab_id_for_reconnect = tab_id.clone();
+                    el = div()
+                        .size_full()
+                        .relative()
+                        .child(el)
+                        .child(
+                            div()
+                                .absolute()
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .items_center()
+                                        .gap_2()
+                                        .px_3()
+                                        .py_1()
+                                        .bg(cx.theme().danger.opacity(0.15))
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.85))
+                                                .text_color(cx.theme().danger)
+                                                .child(t!("session_disconnected", "reason" = reason).to_string()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(rems(0.85))
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(format!("— {}", t!("press_enter_to_reconnect"))),
+                                        )
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.retry_disconnected_tab(&tab_id_for_reconnect, cx);
+                                            }),
+                                        ),
+                                ),
+                        );
+                }
                 let indicator_color = this
                     .tabs
                     .iter()
@@ -2849,115 +2899,6 @@ impl Render for Ashell {
                                                 )
                                             },
                                         ),
-                                ),
-                        ),
-                )
-            })
-            .when_some(self.connection_progress.clone(), |this, progress| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .bg(Hsla {
-                            h: 0.0,
-                            s: 0.0,
-                            l: 0.0,
-                            a: 0.48,
-                        })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .w(px(420.))
-                                .p_5()
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().popover)
-                                .shadow_lg()
-                                .child(
-                                    v_flex()
-                                        .gap_4()
-                                        .child(
-                                            Button::new("ssh-connect-progress")
-                                                .primary()
-                                                .loading(!progress.failed)
-                                                .label(progress.title.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .relative()
-                                                .min_h(px(0.))
-                                                .max_h(px(220.))
-                                                .child(
-                                                    div()
-                                                        .id("connection-progress-scroll")
-                                                        .max_h(px(220.))
-                                                        .overflow_hidden()
-                                                        .overflow_y_scroll()
-                                                        .track_scroll(&self.connection_scroll_handle)
-                                                        .child(
-                                                            v_flex().gap_2().children(
-                                                                progress.lines.iter().cloned().map(|line| {
-                                                                    div()
-                                                                        .text_size(rems(1.0))
-                                                                        .text_color(if progress.failed {
-                                                                            cx.theme().danger
-                                                                        } else {
-                                                                            cx.theme().muted_foreground
-                                                                        })
-                                                                        .child(line)
-                                                                }),
-                                                            ),
-                                                        )
-                                                )
-                                                .child(
-                                                    div()
-                                                        .absolute()
-                                                        .top_0()
-                                                        .right_0()
-                                                        .bottom_0()
-                                                        .w(px(16.))
-                                                        .child(
-                                                            Scrollbar::vertical(&self.connection_scroll_handle)
-                                                                .scrollbar_show(ScrollbarShow::Scrolling)
-                                                        )
-                                                )
-                                        )
-                                        .when(progress.failed, |this| {
-                                            this.child(
-                                                h_flex()
-                                                    .justify_end()
-                                                    .gap_2()
-                                                    .child(
-                                                        Button::new("ssh-connect-progress-retry")
-                                                            .primary()
-                                                            .label(t!("retry").to_string())
-                                                            .on_click(cx.listener(
-                                                                |this, _, _, cx| {
-                                                                    this.retry_connection_progress(
-                                                                        cx,
-                                                                    )
-                                                                },
-                                                            )),
-                                                    )
-                                                    .child(
-                                                        Button::new("ssh-connect-progress-close")
-                                                            .label(t!("cancel").to_string())
-                                                            .on_click(cx.listener(
-                                                                |this, _, _, cx| {
-                                                                    this.cancel_connection_progress(
-                                                                        cx,
-                                                                    )
-                                                                },
-                                                            )),
-                                                    ),
-                                            )
-                                        }),
                                 ),
                         ),
                 )

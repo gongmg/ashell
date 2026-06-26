@@ -2105,7 +2105,7 @@ impl Ashell {
                         this.active_dialog = None;
                         // Send Close command to abort connection if they close the dialog without OK
                         if let Some(tab) = this.tabs.iter().find(|t| t.id == tab_id_for_close) {
-                            tab.backend.send(crate::terminal::BackendCommand::Close);
+                            tab.send_backend(crate::terminal::BackendCommand::Close);
                         }
                         cx.notify();
                     });
@@ -2118,7 +2118,7 @@ impl Ashell {
                             responses.push(state.read(cx).text().to_string());
                         }
                         if let Some(tab) = this.tabs.iter().find(|t| t.id == tab_id_for_ok) {
-                            tab.backend.send(crate::terminal::BackendCommand::PromptResponse(responses));
+                            tab.send_backend(crate::terminal::BackendCommand::PromptResponse(responses));
                         }
                         cx.notify();
                     });

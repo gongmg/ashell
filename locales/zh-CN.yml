@@ -88,6 +88,8 @@ local_terminal_opened: "已打开本地终端"
 connecting: "正在连接"
 starting_connection: "开始连接..."
 connection_failed: "连接失败"
+session_disconnected: "会话已断开: %{reason}"
+press_enter_to_reconnect: "按 Enter 重新连接"
 
 preview_failed: "预览失败: %{err}"
 downloading_file: "正在下载 %{base}..."

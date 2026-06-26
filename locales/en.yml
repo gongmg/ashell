@@ -87,6 +87,8 @@ local_terminal_opened: "local terminal opened"
 connecting: "Connecting"
 starting_connection: "starting connection..."
 connection_failed: "Connection Failed"
+session_disconnected: "Session disconnected: %{reason}"
+press_enter_to_reconnect: "Press Enter to reconnect"
 
 preview_failed: "Preview failed: %{err}"
 downloading_file: "Downloading %{base}..."

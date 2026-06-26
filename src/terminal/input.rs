@@ -112,6 +112,29 @@ impl Ashell {
             }
         }
 
+        // If the active tab is disconnected and user presses Enter, reconnect
+        if event.keystroke.key == "enter"
+            && !event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+        {
+            let active_id = self.active_tab.clone();
+            if let Some(active_id) = active_id {
+                let is_disconnected = self
+                    .tabs
+                    .iter()
+                    .find(|t| t.id == active_id)
+                    .is_some_and(|tab| tab.disconnected_reason.is_some());
+                if is_disconnected {
+                    self.retry_disconnected_tab(&active_id, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
+            }
+        }
+
         if event.prefer_character_input {
             if let Some(text) = event.keystroke.key_char.as_deref() {
                 if !text.is_empty()
@@ -138,7 +161,7 @@ impl Ashell {
         tab.clear_selection();
 
         if let Some(bytes) = encode_key(&event.keystroke, tab.app_cursor_mode(), false) {
-            tab.backend.send(BackendCommand::Input(bytes));
+            tab.send_backend(BackendCommand::Input(bytes));
             window.prevent_default();
             cx.stop_propagation();
             cx.notify();
@@ -176,7 +199,7 @@ impl Ashell {
         }
 
         tab.clear_selection();
-        tab.backend.send(BackendCommand::Input(bytes));
+        tab.send_backend(BackendCommand::Input(bytes));
         window.prevent_default();
         cx.stop_propagation();
         cx.notify();
@@ -258,8 +281,7 @@ impl Ashell {
         }
         tab.clear_selection();
         self.terminal_marked_text = None;
-        tab.backend
-            .send(BackendCommand::Input(text.as_bytes().to_vec()));
+        tab.send_backend(BackendCommand::Input(text.as_bytes().to_vec()));
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -517,8 +539,7 @@ impl Ashell {
                         }
                     }
                     if !bytes.is_empty() {
-                        tab.backend
-                            .send(crate::terminal::BackendCommand::Input(bytes));
+                        tab.send_backend(crate::terminal::BackendCommand::Input(bytes));
                     }
                 }
                 window.prevent_default();
@@ -532,8 +553,7 @@ impl Ashell {
                     bytes.extend_from_slice(&[b'\x1b', b'O', code]);
                 }
                 if !bytes.is_empty() {
-                    tab.backend
-                        .send(crate::terminal::BackendCommand::Input(bytes));
+                    tab.send_backend(crate::terminal::BackendCommand::Input(bytes));
                 }
                 window.prevent_default();
                 cx.stop_propagation();

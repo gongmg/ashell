@@ -138,12 +138,20 @@ pub struct TerminalTab {
     pub kind: TabKind,
     pub status: String,
     pub connected: bool,
+    pub disconnected_reason: Option<String>,
+    /// Incremented each time the tab is reconnected. Used to ignore stale
+    /// `BackendEvent::Closed` from the previous backend after a retry.
+    pub backend_generation: u32,
+    /// Set to `true` when the current backend sends its first `Output` or
+    /// `Connected` event. Used to skip stale `Closed` events that arrive
+    /// before the new backend has started producing output.
+    pub backend_initialized: bool,
     pub session: Option<Session>,
     processor: Processor,
     term: Term<TerminalListener>,
-    cols: u16,
-    rows: u16,
-    pub backend: BackendTx,
+    pub cols: u16,
+    pub rows: u16,
+    pub backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
     pub scroll_pixel_y: f32,
     pub(crate) highlight_cache: std::cell::RefCell<Option<(Vec<RenderCell>, std::collections::HashMap<(i32, i32), gpui::Hsla>)>>,
 }
@@ -241,18 +249,22 @@ impl TerminalTab {
         backend: BackendTx,
         events: std::sync::mpsc::Sender<BackendEvent>,
     ) -> Self {
+        let shared_backend = std::sync::Arc::new(std::sync::Mutex::new(backend));
         Self {
             id: id.clone(),
             title,
             kind,
             status,
             connected: matches!(kind, TabKind::Local),
+            disconnected_reason: None,
+            backend_generation: 0,
+            backend_initialized: true,
             session: None,
             processor: Processor::new(),
-            term: new_term(100, 30, backend.clone(), id, events),
+            term: new_term(100, 30, shared_backend.clone(), id, events),
             cols: 100,
             rows: 30,
-            backend,
+            backend: shared_backend,
             scroll_pixel_y: 0.0,
             highlight_cache: std::cell::RefCell::new(None),
         }
@@ -260,6 +272,22 @@ impl TerminalTab {
 
     pub fn feed(&mut self, bytes: &[u8]) {
         self.processor.advance(&mut self.term, bytes);
+    }
+
+    /// Send a command to the backend. Thread-safe via the shared Arc<Mutex>.
+    pub fn send_backend(&self, command: BackendCommand) {
+        if let Ok(backend) = self.backend.lock() {
+            backend.send(command);
+        }
+    }
+
+    /// Replace the backend with a new one. The `Term`'s internal listener
+    /// shares the same `Arc`, so user input is automatically routed to the
+    /// new backend. The old backend must be closed by the caller.
+    pub fn set_backend(&self, new_backend: BackendTx) {
+        if let Ok(mut backend) = self.backend.lock() {
+            *backend = new_backend;
+        }
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -274,7 +302,7 @@ impl TerminalTab {
                 self.rows
             );
             self.term.resize(TerminalSize::new(self.cols, self.rows));
-            self.backend.send(BackendCommand::Resize { cols, rows });
+            self.send_backend(BackendCommand::Resize { cols, rows });
         }
     }
 
@@ -339,7 +367,7 @@ impl TerminalTab {
 
         let highlights = if is_enabled {
             let mut cache = self.highlight_cache.borrow_mut();
-            let cache_valid = cache.as_ref().map_or(false, |(cached_cells, _)| {
+            let cache_valid = cache.as_ref().is_some_and(|(cached_cells, _)| {
                 cached_cells == &cells
             });
             if cache_valid {
@@ -467,8 +495,7 @@ impl TerminalTab {
             .replace("\r\n", "\r")
             .replace('\n', "\r");
 
-        self.backend
-            .send(BackendCommand::Input(paste_text.into_bytes()));
+        self.send_backend(BackendCommand::Input(paste_text.into_bytes()));
     }
 }
 
@@ -518,16 +545,18 @@ fn viewport_selection_from_range(
 #[derive(Clone)]
 struct TerminalListener {
     tab_id: String,
-    backend: BackendTx,
+    backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
     events: std::sync::mpsc::Sender<BackendEvent>,
 }
 
 impl EventListener for TerminalListener {
     fn send_event(&self, event: Event) {
         match event {
-            Event::PtyWrite(output) => self
-                .backend
-                .send(BackendCommand::Input(output.into_bytes())),
+            Event::PtyWrite(output) => {
+                if let Ok(backend) = self.backend.lock() {
+                    backend.send(BackendCommand::Input(output.into_bytes()));
+                }
+            }
             Event::TextAreaSizeRequest(format) => {
                 let size = alacritty_terminal::event::WindowSize {
                     num_lines: 30,
@@ -535,8 +564,9 @@ impl EventListener for TerminalListener {
                     cell_width: 8,
                     cell_height: 16,
                 };
-                self.backend
-                    .send(BackendCommand::Input(format(size).into_bytes()));
+                if let Ok(backend) = self.backend.lock() {
+                    backend.send(BackendCommand::Input(format(size).into_bytes()));
+                }
             }
             Event::Title(title) => {
                 let _ = self.events.send(BackendEvent::TerminalTitleChanged {
@@ -552,7 +582,7 @@ impl EventListener for TerminalListener {
 fn new_term(
     cols: u16,
     rows: u16,
-    backend: BackendTx,
+    backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
     tab_id: String,
     events: std::sync::mpsc::Sender<BackendEvent>,
 ) -> Term<TerminalListener> {

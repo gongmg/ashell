@@ -22,7 +22,7 @@ pub(crate) use app::keybinding_recorder::{
 };
 
 pub(crate) use app::{
-    Ashell, ConnectionProgress, PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup,
+    Ashell, PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup,
 };
 
 fn main() {

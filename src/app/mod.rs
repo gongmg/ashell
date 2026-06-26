@@ -259,8 +259,6 @@ pub(crate) struct Ashell {
     pub(crate) tabs_scroll_handle: gpui::ScrollHandle,
     pub(crate) selector_scroll_handle: gpui::ScrollHandle,
     pub(crate) saved_scroll_handle: gpui::ScrollHandle,
-    pub(crate) connection_scroll_handle: gpui::ScrollHandle,
-    pub(crate) connection_progress: Option<ConnectionProgress>,
     pub(crate) pending_sftp_path_sync: Option<String>,
     pub(crate) sftp_context_menu: Option<SftpContextMenuState>,
     pub(crate) sftp_creating_folder: bool,
@@ -325,14 +323,6 @@ pub(crate) enum SelectorEntry {
     Local,
     NewSsh,
     Saved(String),
-}
-
-#[derive(Clone)]
-pub(crate) struct ConnectionProgress {
-    pub(crate) tab_id: String,
-    pub(crate) title: SharedString,
-    pub(crate) lines: Vec<SharedString>,
-    pub(crate) failed: bool,
 }
 
 #[derive(Clone)]
@@ -615,8 +605,6 @@ impl Ashell {
             tabs_scroll_handle: gpui::ScrollHandle::new(),
             selector_scroll_handle: gpui::ScrollHandle::new(),
             saved_scroll_handle: gpui::ScrollHandle::new(),
-            connection_scroll_handle: gpui::ScrollHandle::new(),
-            connection_progress: None,
             pending_sftp_path_sync: Some("/".into()),
             sftp_context_menu: None,
             sftp_creating_folder: false,
@@ -800,36 +788,25 @@ impl Ashell {
             match event {
                 BackendEvent::Output { tab_id, bytes } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.backend_initialized = true;
                         tab.feed(&bytes);
                     }
                 }
                 BackendEvent::Status { tab_id, text } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.backend_initialized = true;
                         tab.status = text.clone();
-                    }
-                    if let Some(progress) = self.connection_progress.as_mut() {
-                        if progress.tab_id == tab_id {
-                            progress.lines.push(text.clone().into());
-                            let _idx = progress.lines.len().saturating_sub(1);
-                            self.connection_scroll_handle
-                                .set_offset(point(px(0.), px(-99999.0)));
-                        }
                     }
                     self.status = text.into();
                 }
                 BackendEvent::Connected { tab_id } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                        tab.backend_initialized = true;
                         tab.connected = true;
+                        tab.disconnected_reason = None;
                     }
                     self.sync_system_tab_to_active_group();
                     self.request_active_system_snapshot();
-                    if self
-                        .connection_progress
-                        .as_ref()
-                        .is_some_and(|progress| progress.tab_id == tab_id && !progress.failed)
-                    {
-                        self.connection_progress = None;
-                    }
                 }
                 BackendEvent::PromptRequest {
                     tab_id,
@@ -905,72 +882,28 @@ impl Ashell {
                 }
                 BackendEvent::Closed { tab_id, reason } => {
                     self.remote_sample_in_flight = false;
-                    let mut tab_title = None;
-                    let mut session_label = None;
+                    let is_stale = self
+                        .tabs
+                        .iter()
+                        .find(|t| t.id == tab_id)
+                        .is_some_and(|tab| {
+                            // After retry_disconnected_tab, the old backend's threads
+                            // may still send Closed events. Skip those — they arrive
+                            // before the new backend sends its first Output/Connected.
+                            // Once backend_initialized is set, any Closed is from the
+                            // current backend and should be processed.
+                            tab.backend_generation > 0 && !tab.backend_initialized
+                        });
+                    if is_stale {
+                        continue;
+                    }
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.connected = false;
                         tab.status = reason.clone();
-                        tab_title = Some(tab.title.clone());
-                        session_label = tab.session.as_ref().map(|session| {
-                            format!("{}@{}:{}", session.user, session.host, session.port)
-                        });
-                    }
-                    let is_sftp = self.tab_groups.iter().any(|g| g.id == tab_id);
-                    if is_sftp {
-                        tab_title = self.tab_groups.iter().find(|g| g.id == tab_id).map(|g| g.title.clone());
-                        session_label = Some("sftp".to_string());
+                        tab.disconnected_reason = Some(reason.clone());
                     }
                     if self.system_tab_id.as_deref() == Some(tab_id.as_str()) {
                         self.system_status = Some(reason.clone().into());
-                    }
-                    let is_graceful_exit =
-                        reason == "local shell closed" || reason == "ssh session closed";
-                    // Auto-close the pane on graceful exit (e.g. user typed exit)
-                    if is_graceful_exit {
-                        self.handle_tab_close(tab_id.clone());
-                        self.status = reason.into();
-                        self.remote_sample_in_flight = false;
-                        return changed;
-                    }
-                    let mut needs_new_progress = false;
-                    if let Some(progress) = self.connection_progress.as_mut() {
-                        if progress.tab_id == tab_id {
-                            progress.lines.push(reason.clone().into());
-                            let _idx = progress.lines.len().saturating_sub(1);
-                            self.connection_scroll_handle
-                                .set_offset(point(px(0.), px(-99999.0)));
-                            let _ = session_label;
-                            let _ = tab_title;
-                            progress.title = t!("connection_failed").into();
-                            progress.failed = true;
-                        } else if !progress.failed {
-                            // We were showing connecting progress, but another tab dropped!
-                            // Switch to failed state so the user can see it and retry.
-                            progress.tab_id = tab_id.clone();
-                            let msg = format!("{}: {}", tab_title.unwrap_or_default(), reason);
-                            progress.lines.push(msg.into());
-                            self.connection_scroll_handle
-                                .set_offset(point(px(0.), px(-99999.0)));
-                            progress.title = t!("connection_failed").into();
-                            progress.failed = true;
-                        } else {
-                            // Already showing a failure dialog, just append the new failure
-                            let msg = format!("{}: {}", tab_title.unwrap_or_default(), reason);
-                            progress.lines.push(msg.into());
-                            self.connection_scroll_handle
-                                .set_offset(point(px(0.), px(-99999.0)));
-                        }
-                    } else if let Some(_) = session_label {
-                        needs_new_progress = true;
-                    }
-
-                    if needs_new_progress && !is_graceful_exit {
-                        self.connection_progress = Some(ConnectionProgress {
-                            tab_id: tab_id.clone(),
-                            title: t!("connection_failed").into(),
-                            lines: vec![reason.clone().into()],
-                            failed: true,
-                        });
                     }
                     self.status = reason.into();
                 }
@@ -1114,7 +1047,9 @@ impl Ashell {
             return;
         }
         self.remote_sample_in_flight = true;
-        backend.send(crate::terminal::BackendCommand::SampleMetrics);
+        if let Ok(backend) = backend.lock() {
+            backend.send(crate::terminal::BackendCommand::SampleMetrics);
+        }
     }
 
     pub(crate) fn terminal_ime_bounds_for_range(

@@ -335,5 +335,3 @@ pub fn paint_custom_block(
 
     painted
 }
-
-
