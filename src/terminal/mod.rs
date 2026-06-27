@@ -490,12 +490,22 @@ impl TerminalTab {
     }
 
     pub fn paste_text(&mut self, text: &str) {
+        let bracketed = self.term.mode().contains(TermMode::BRACKETED_PASTE);
         let paste_text = text
             .replace('\x1b', "")
             .replace("\r\n", "\r")
             .replace('\n', "\r");
 
-        self.send_backend(BackendCommand::Input(paste_text.into_bytes()));
+        let mut bytes = Vec::new();
+        if bracketed {
+            bytes.extend_from_slice(b"\x1b[200~");
+        }
+        bytes.extend_from_slice(paste_text.as_bytes());
+        if bracketed {
+            bytes.extend_from_slice(b"\x1b[201~");
+        }
+
+        self.send_backend(BackendCommand::Input(bytes));
     }
 }
 
