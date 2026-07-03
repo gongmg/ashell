@@ -2812,40 +2812,43 @@ impl Render for Ashell {
                         .h(px(34.))
                         .w_full()
                         .bg(cx.theme().tab_bar)
-                        .window_control_area(gpui::WindowControlArea::Drag)
-                        .on_double_click(|_, window, _| {
-                            #[cfg(target_os = "macos")]
-                            window.titlebar_double_click();
-                            #[cfg(not(target_os = "macos"))]
-                            window.zoom_window();
-                        })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, _| {
-                                this.should_move_window = true;
-                            }),
-                        )
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, _| {
-                                this.should_move_window = false;
-                            }),
-                        )
-                        .on_mouse_down_out(cx.listener(|this, _, _, _| {
-                            this.should_move_window = false;
-                        }))
-                        .on_mouse_move(cx.listener(|this, _, window, _| {
-                            if this.should_move_window {
-                                this.should_move_window = false;
-                                window.start_window_move();
-                            }
-                        }))
                         .child(self.render_window_controls(window, cx))
                         .child(
                             div()
+                                .id("tab-bar-drag")
                                 .flex_1()
                                 .min_w(px(0.))
                                 .h_full()
+                                .window_control_area(gpui::WindowControlArea::Drag)
+                                .on_double_click(|_, window, _| {
+                                    #[cfg(target_os = "macos")]
+                                    window.titlebar_double_click();
+                                    #[cfg(not(target_os = "macos"))]
+                                    window.zoom_window();
+                                })
+                                .when(cfg!(target_os = "linux"), |this| {
+                                    this.on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, _| {
+                                            this.should_move_window = true;
+                                        }),
+                                    )
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, _| {
+                                            this.should_move_window = false;
+                                        }),
+                                    )
+                                    .on_mouse_down_out(cx.listener(|this, _, _, _| {
+                                        this.should_move_window = false;
+                                    }))
+                                    .on_mouse_move(cx.listener(|this, _, window, _| {
+                                        if this.should_move_window {
+                                            this.should_move_window = false;
+                                            window.start_window_move();
+                                        }
+                                    }))
+                                })
                                 .child(self.render_tab_bar(cx)),
                         ),
                 )
