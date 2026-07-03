@@ -82,6 +82,39 @@ open target/release/ashell.app
 
 The packaging script creates a standard `.app` bundle. It does not attach an entitlements file, and after signing, it verifies that `com.apple.security.app-sandbox` is not present (meaning it runs non-sandboxed).
 
+## Package Linux (Debian/Ubuntu)
+
+### Prerequisites
+
+```bash
+sudo apt install pkg-config libfontconfig1-dev
+cargo install cargo-deb
+```
+
+### Build .deb
+
+```bash
+cargo build --release
+cargo deb
+```
+
+The `.deb` file will be generated at:
+
+```
+target/debian/ashell_0.4.8-1_amd64.deb
+```
+
+### Install
+
+```bash
+sudo dpkg -i target/debian/ashell_0.4.8-1_amd64.deb
+```
+
+After installation, you can launch from the application menu or by running `ashell` in the terminal. The `.deb` package includes:
+- `/usr/bin/ashell` — Main binary
+- `/usr/share/applications/ashell.desktop` — Desktop entry
+- `/usr/share/icons/hicolor/256x256/apps/ashell.png` — Application icon
+
 ## License
 
 This project is licensed under the [GPL-3.0-or-later License](LICENSE).

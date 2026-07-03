@@ -54,6 +54,18 @@ rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sha2 = "0.10"
 
+[package.metadata.deb]
+maintainer = "ashell contributors"
+license-file = ["LICENSE"]
+extended-description = "A GPUI Component based SSH and local terminal client"
+section = "terminal"
+priority = "optional"
+assets = [
+    ["target/release/ashell", "usr/bin/", "755"],
+    ["assets/ashell.desktop", "usr/share/applications/", "644"],
+    ["assets/icons/ashell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+]
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -2819,6 +2819,27 @@ impl Render for Ashell {
                             #[cfg(not(target_os = "macos"))]
                             window.zoom_window();
                         })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, _| {
+                                this.should_move_window = true;
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, _| {
+                                this.should_move_window = false;
+                            }),
+                        )
+                        .on_mouse_down_out(cx.listener(|this, _, _, _| {
+                            this.should_move_window = false;
+                        }))
+                        .on_mouse_move(cx.listener(|this, _, window, _| {
+                            if this.should_move_window {
+                                this.should_move_window = false;
+                                window.start_window_move();
+                            }
+                        }))
                         .child(self.render_window_controls(window, cx))
                         .child(
                             div()

@@ -82,6 +82,39 @@ open target/release/ashell.app
 
 该打包脚本会创建一个标准的 `.app` 应用程序包。它没有附加 entitlements 文件，并且在签名后会验证是否不存在 `com.apple.security.app-sandbox`（这意味着它在非沙盒模式下运行）。
 
+## 打包 Linux (Debian/Ubuntu)
+
+### 前置条件
+
+```bash
+sudo apt install pkg-config libfontconfig1-dev
+cargo install cargo-deb
+```
+
+### 构建 .deb 包
+
+```bash
+cargo build --release
+cargo deb
+```
+
+生成的 `.deb` 文件位于：
+
+```
+target/debian/ashell_0.4.9-1_amd64.deb
+```
+
+### 安装
+
+```bash
+sudo dpkg -i target/debian/ashell_0.4.9-1_amd64.deb
+```
+
+安装后可通过应用菜单或命令行 `ashell` 启动。`.deb` 包包含以下内容：
+- `/usr/bin/ashell` — 主程序
+- `/usr/share/applications/ashell.desktop` — 桌面入口
+- `/usr/share/icons/hicolor/256x256/apps/ashell.png` — 应用图标
+
 ## 协议
 
 本项目采用 [GPL-3.0-or-later 协议](LICENSE) 开源。
