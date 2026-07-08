@@ -25,7 +25,7 @@ pub struct SshConfigEntry {
 /// Wildcard patterns (Host *) are excluded.
 pub fn parse_ssh_config() -> Result<Vec<SshConfigEntry>> {
     let config_path = ssh_config_path()?;
-    if !config_path.exists() {
+    if !config_path.is_file() {
         return Ok(Vec::new());
     }
 
@@ -79,6 +79,9 @@ pub fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEntry>> {
                 // Host line may contain multiple patterns (Host a b c)
                 // Take the first non-wildcard pattern as the display alias
                 let patterns: Vec<&str> = value.split_whitespace().collect();
+                if patterns.is_empty() {
+                    continue;
+                }
                 let host_alias = patterns
                     .iter()
                     .find(|p| !p.contains('*') && !p.contains('?'))
@@ -140,3 +143,38 @@ pub fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEntry>> {
 
     Ok(entries)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ssh_config_content() {
+        let content = r#"
+            Host myhost
+                HostName 1.2.3.4
+                User git
+                Port 2222
+                IdentityFile ~/.ssh/id_rsa
+
+            Host
+            Host = 
+
+            Host anotherhost
+                HostName 5.6.7.8
+        "#;
+
+        let entries = parse_ssh_config_content(content).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        assert_eq!(entries[0].host_alias, "myhost");
+        assert_eq!(entries[0].hostname, "1.2.3.4");
+        assert_eq!(entries[0].user, "git");
+        assert_eq!(entries[0].port, 2222);
+        assert_eq!(entries[0].identity_files, vec!["~/.ssh/id_rsa".to_string()]);
+
+        assert_eq!(entries[1].host_alias, "anotherhost");
+        assert_eq!(entries[1].hostname, "5.6.7.8");
+    }
+}
+
