@@ -2,11 +2,11 @@ pub mod config_sync;
 pub mod constants;
 pub mod dialogs;
 pub mod keybinding_recorder;
+pub mod resizable;
 pub mod search;
 pub mod startup;
 pub mod theme;
 pub mod ui;
-pub mod resizable;
 
 use std::{
     cell::{Cell, RefCell},
@@ -17,6 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::app::resizable::ResizableState;
 use gpui::{
     AppContext as _, Bounds, Context, Entity, FocusHandle, Pixels, Point, SharedString, Size,
     UniformListScrollHandle, Window, point, px, size,
@@ -26,12 +27,12 @@ use gpui_component::{
     input::{InputEvent, InputState},
     scroll::ScrollbarHandle,
 };
-use crate::app::resizable::ResizableState;
 use rust_i18n::t;
 use tokio::runtime::Runtime;
 
 use crate::{
     session::config::{AuthMethod, ConfigStore},
+    session::ssh_config::SshConfigEntry,
     system::{SystemSampler, SystemSnapshot},
     terminal::{self, BackendEvent, TabKind, TerminalTab},
 };
@@ -236,6 +237,8 @@ pub(crate) struct Ashell {
     pub(crate) sync_status: SharedString,
     pub(crate) sftp_path_input: Entity<InputState>,
     pub(crate) ssh_auth_method: AuthMethod,
+    pub(crate) ssh_config_entries: Vec<SshConfigEntry>,
+    pub(crate) ssh_config_selected: Option<usize>,
     pub(crate) editing_session_id: Option<String>,
     pub(crate) follow_system_theme: bool,
     pub(crate) theme_mode: ThemeMode,
@@ -398,16 +401,22 @@ impl Ashell {
                 .placeholder("SSH private key passphrase (optional)")
                 .masked(true)
         });
-        let proxy_host_input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_host").to_string()));
-        let proxy_port_input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_port").to_string()));
-        let proxy_user_input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_user").to_string()));
-        let proxy_password_input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_password").to_string()).masked(true));
+        let proxy_host_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_host").to_string()));
+        let proxy_port_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_port").to_string()));
+        let proxy_user_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("proxy_user").to_string()));
+        let proxy_password_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("proxy_password").to_string())
+                .masked(true)
+        });
         let sftp_path_input = cx.new(|cx| InputState::new(window, cx).default_value("/"));
         let sftp_new_folder_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("new_folder").to_string()));
-        let search_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("search").to_string())
-        });
+        let search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
         let config = ConfigStore::load().unwrap_or_else(|err| {
             tracing::warn!("failed to load config: {err:#}");
             ConfigStore::in_memory()
@@ -420,7 +429,12 @@ impl Ashell {
         let global_proxy_port_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("proxy_port").to_string())
-                .default_value(config.global_proxy_port().map(|p| p.to_string()).unwrap_or_default())
+                .default_value(
+                    config
+                        .global_proxy_port()
+                        .map(|p| p.to_string())
+                        .unwrap_or_default(),
+                )
         });
         let global_proxy_user_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -599,6 +613,8 @@ impl Ashell {
             sync_status: t!("sync_not_run").into(),
             sftp_path_input,
             ssh_auth_method: AuthMethod::Password,
+            ssh_config_entries: crate::session::ssh_config::parse_ssh_config().unwrap_or_default(),
+            ssh_config_selected: None,
             editing_session_id: None,
             follow_system_theme,
             theme_mode,
@@ -781,7 +797,9 @@ impl Ashell {
                                 | crate::session::config::CursorStyle::BeamBlink
                         );
                         let now = std::time::Instant::now();
-                        let blink_due = is_blinking && now.duration_since(last_blink_time) >= std::time::Duration::from_millis(600);
+                        let blink_due = is_blinking
+                            && now.duration_since(last_blink_time)
+                                >= std::time::Duration::from_millis(600);
                         if changed || system_sampled || blink_due {
                             cx.notify();
                             idle_frames = 0;
@@ -1235,13 +1253,28 @@ impl Ashell {
                     }
                 }
                 gpui::WindowBounds::Maximized(b) => {
-                    let mut restore_bounds = (b.origin.x.into(), b.origin.y.into(), b.size.width.into(), b.size.height.into());
+                    let mut restore_bounds = (
+                        b.origin.x.into(),
+                        b.origin.y.into(),
+                        b.size.width.into(),
+                        b.size.height.into(),
+                    );
                     if let Some(existing_bounds) = config.window_bounds() {
                         match existing_bounds {
-                            crate::session::config::SavedWindowBounds::Windowed { x, y, width, height } => {
+                            crate::session::config::SavedWindowBounds::Windowed {
+                                x,
+                                y,
+                                width,
+                                height,
+                            } => {
                                 restore_bounds = (*x, *y, *width, *height);
                             }
-                            crate::session::config::SavedWindowBounds::Maximized { x, y, width, height } => {
+                            crate::session::config::SavedWindowBounds::Maximized {
+                                x,
+                                y,
+                                width,
+                                height,
+                            } => {
                                 restore_bounds = (*x, *y, *width, *height);
                             }
                             _ => {}
@@ -1263,13 +1296,15 @@ impl Ashell {
                     }
                 }
             };
-            let workspace_sizes: Vec<f32> = self.workspace_panels
+            let workspace_sizes: Vec<f32> = self
+                .workspace_panels
                 .read(cx)
                 .sizes()
                 .iter()
                 .map(|s| s.into())
                 .collect();
-            let mut body_sizes: Vec<f32> = self.body_panels
+            let mut body_sizes: Vec<f32> = self
+                .body_panels
                 .read(cx)
                 .sizes()
                 .iter()

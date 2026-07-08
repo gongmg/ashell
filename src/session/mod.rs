@@ -1,8 +1,10 @@
 pub mod config;
+pub mod ssh_config;
+pub mod ssh_keys;
 
 use gpui::{
-    AppContext as _, Context, Entity, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, SharedString, Window, px,
+    AppContext as _, Context, Entity, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    SharedString, Window, px,
 };
 use gpui_component::{Theme, WindowExt as _, input::InputState};
 use rust_i18n::t;
@@ -12,9 +14,7 @@ use self::config::{AuthMethod, Session};
 
 use crate::{
     Ashell, PaneLayout, SelectorEntry, TabGroup,
-    app::constants::{
-        DEFAULT_COLS, DEFAULT_ROWS,
-    },
+    app::constants::{DEFAULT_COLS, DEFAULT_ROWS},
     backend::{local, ssh},
     terminal::{BackendCommand, RenderSnapshot, TabKind, TerminalTab},
 };
@@ -103,12 +103,15 @@ impl Ashell {
         let mut session = match self.ssh_auth_method {
             AuthMethod::Password => Session::password(host, port, user, password),
             AuthMethod::Key => {
-                if key_path.is_empty() && key_inline.trim().is_empty() {
-                    self.status = "private key path or content is required".into();
-                    cx.notify();
-                    return;
-                }
                 Session::key(host, port, user, key_path, key_inline, passphrase)
+            }
+            AuthMethod::Config => {
+                // Force key_inline to empty — config mode never uses inline key content.
+                // The backend will try default keys from ~/.ssh/ if no explicit key path is set.
+                let mut session =
+                    Session::key(host, port, user, key_path, String::new(), String::new());
+                session.auth = AuthMethod::Config;
+                session
             }
         };
         session.name = name;
@@ -151,6 +154,7 @@ impl Ashell {
     pub(crate) fn reset_ssh_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_session_id = None;
         self.ssh_auth_method = AuthMethod::Password;
+        self.ssh_config_selected = None;
         Self::set_input_value(&self.session_name_input, "", window, cx);
         Self::set_input_value(&self.host_input, "", window, cx);
         Self::set_input_value(&self.port_input, "22", window, cx);
@@ -202,15 +206,33 @@ impl Ashell {
         } else {
             session.proxy_type.clone()
         };
-        Self::set_input_value(&self.proxy_host_input, session.proxy_host.clone(), window, cx);
         Self::set_input_value(
-            &self.proxy_port_input,
-            session.proxy_port.map(|p| p.to_string()).unwrap_or_default(),
+            &self.proxy_host_input,
+            session.proxy_host.clone(),
             window,
             cx,
         );
-        Self::set_input_value(&self.proxy_user_input, session.proxy_user.clone(), window, cx);
-        Self::set_input_value(&self.proxy_password_input, session.proxy_password.clone(), window, cx);
+        Self::set_input_value(
+            &self.proxy_port_input,
+            session
+                .proxy_port
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
+            window,
+            cx,
+        );
+        Self::set_input_value(
+            &self.proxy_user_input,
+            session.proxy_user.clone(),
+            window,
+            cx,
+        );
+        Self::set_input_value(
+            &self.proxy_password_input,
+            session.proxy_password.clone(),
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn pick_ssh_key_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -362,7 +384,55 @@ impl Ashell {
 
     pub(crate) fn set_ssh_auth_method(&mut self, method: AuthMethod, cx: &mut Context<Self>) {
         self.ssh_auth_method = method;
+        if method == AuthMethod::Config {
+            self.refresh_ssh_config();
+            self.ssh_config_selected = None;
+        }
         cx.notify();
+    }
+
+    pub(crate) fn refresh_ssh_config(&mut self) {
+        self.ssh_config_entries =
+            crate::session::ssh_config::parse_ssh_config().unwrap_or_default();
+    }
+
+    pub(crate) fn select_ssh_config_entry(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ssh_config_selected = Some(index);
+        if let Some(entry) = self.ssh_config_entries.get(index) {
+            Self::set_input_value(
+                &self.session_name_input,
+                entry.host_alias.clone(),
+                window,
+                cx,
+            );
+            Self::set_input_value(&self.host_input, entry.hostname.clone(), window, cx);
+            Self::set_input_value(&self.port_input, entry.port.to_string(), window, cx);
+            // If no user specified in config, use current system user
+            let user = if entry.user.is_empty() {
+                std::env::var("USER")
+                    .or_else(|_| std::env::var("USERNAME"))
+                    .unwrap_or_else(|_| "root".to_string())
+            } else {
+                entry.user.clone()
+            };
+            Self::set_input_value(&self.user_input, user, window, cx);
+            Self::set_input_value(
+                &self.key_path_input,
+                entry.identity_files.first().cloned().unwrap_or_default(),
+                window,
+                cx,
+            );
+            Self::set_input_value(&self.password_input, String::new(), window, cx);
+            Self::set_input_value(&self.key_inline_input, String::new(), window, cx);
+            Self::set_input_value(&self.passphrase_input, String::new(), window, cx);
+            // Auto-connect on selection
+            self.connect_ssh(window, cx);
+        }
     }
 
     pub(crate) fn set_ssh_proxy_type(&mut self, proxy_type: String, cx: &mut Context<Self>) {
@@ -901,7 +971,12 @@ impl Ashell {
             if event.modifiers.platform {
                 if let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position) {
                     if let Some(snapshot) = self.active_snapshot() {
-                        if let Some((url, _)) = crate::terminal::highlight::find_url_at_cell(&snapshot.cells, snapshot.rows, row, col) {
+                        if let Some((url, _)) = crate::terminal::highlight::find_url_at_cell(
+                            &snapshot.cells,
+                            snapshot.rows,
+                            row,
+                            col,
+                        ) {
                             let _ = open::that(&url);
                             return;
                         }
@@ -913,7 +988,8 @@ impl Ashell {
                     if !text.is_empty() {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
                         if let Some(active_id) = &self.active_tab {
-                            if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == active_id) {
+                            if let Some(tab) = self.tabs.iter_mut().find(|tab| &tab.id == active_id)
+                            {
                                 tab.clear_selection();
                             }
                         }
@@ -967,10 +1043,6 @@ impl Ashell {
     pub(crate) fn session_detail(&self, session: &Session) -> String {
         format!("{}@{}:{}", session.user, session.host, session.port)
     }
-
-
-
-
 
     pub(crate) fn split_current_pane(&mut self, direction: &str, cx: &mut Context<Self>) {
         tracing::info!(
