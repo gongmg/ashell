@@ -197,6 +197,17 @@ impl Ashell {
             .when_some(active_sftp.clone(), |this, sftp| {
                 let selected_entries = sftp.selected_entries.clone();
                 this.child(
+                    Button::new("sftp-sync-cwd")
+                        .ghost()
+                        .small()
+                        .icon(IconName::SquareTerminal)
+                        .label(t!("sync_cwd").to_string())
+                        .tooltip(t!("sync_cwd_tooltip").to_string())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.sync_cwd_from_terminal(window, cx);
+                        })),
+                )
+                .child(
                     Button::new("sftp-refresh")
                         .ghost()
                         .small()

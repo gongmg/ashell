@@ -1010,7 +1010,7 @@ impl Ashell {
                 }
                 BackendEvent::TerminalTitleChanged { tab_id, title } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-                        tab.title = title.clone();
+                        tab.dynamic_title = title;
                     }
                 }
                 BackendEvent::SyncFinished(result) => {
@@ -1226,6 +1226,73 @@ impl Ashell {
             self.handle_tab_close(tab_id);
         }
         cx.notify();
+    }
+
+    pub(crate) fn sync_cwd_from_terminal(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut Context<Self>,
+    ) {
+        let active_id = self.active_tab.clone();
+        let Some(active_id) = active_id else {
+            return;
+        };
+
+        if let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) {
+            let home_dir = if let Some(group) = self
+                .tab_groups
+                .iter()
+                .find(|g| g.pane_root.contains(&tab.id))
+            {
+                group
+                    .sftp
+                    .as_ref()
+                    .map(|s| s.home_dir.as_str())
+                    .unwrap_or("/")
+            } else {
+                "/"
+            };
+
+            let parsed = Self::parse_path_from_title(&tab.dynamic_title, home_dir);
+
+            if let Some(path) = parsed {
+                if let Some(group) = self
+                    .tab_groups
+                    .iter_mut()
+                    .find(|g| g.pane_root.contains(&active_id))
+                {
+                    if let Some(sftp) = group.sftp.as_mut() {
+                        sftp.current_path = path.clone();
+                        self.pending_sftp_path_sync = Some(path.clone());
+                        if let Some(handle) = self.sftp_handles.get(&group.id) {
+                            let _ = handle
+                                .commands
+                                .send(crate::sftp::SftpCommand::ListDir(path));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn parse_path_from_title(title: &str, home_dir: &str) -> Option<String> {
+        let title = title.strip_prefix("ASHELL_CWD:").unwrap_or(title);
+        let path_part = if let Some(pos) = title.find(':') {
+            title[pos + 1..].trim()
+        } else {
+            title.trim()
+        };
+
+        if path_part.starts_with('/') {
+            Some(path_part.to_string())
+        } else if path_part == "~" {
+            Some(home_dir.to_string())
+        } else if let Some(rest) = path_part.strip_prefix("~/") {
+            let home = home_dir.trim_end_matches('/');
+            Some(format!("{}/{}", home, rest))
+        } else {
+            None
+        }
     }
 
     pub(crate) fn save_layout_state(&self, window: &mut gpui::Window, cx: &gpui::App) {

@@ -116,6 +116,7 @@ impl BackendTx {
 pub struct TerminalTab {
     pub id: String,
     pub title: String,
+    pub dynamic_title: String,
     pub kind: TabKind,
     pub status: String,
     pub connected: bool,
@@ -238,7 +239,8 @@ impl TerminalTab {
         let shared_backend = std::sync::Arc::new(std::sync::Mutex::new(backend));
         Self {
             id: id.clone(),
-            title,
+            title: title.clone(),
+            dynamic_title: title,
             kind,
             status,
             connected: matches!(kind, TabKind::Local),
@@ -247,7 +249,7 @@ impl TerminalTab {
             backend_initialized: true,
             session: None,
             processor: Processor::new(),
-            term: new_term(100, 30, shared_backend.clone(), id, events),
+            term: new_term(100, 30, shared_backend.clone(), id, events.clone()),
             cols: 100,
             rows: 30,
             backend: shared_backend,
