@@ -1010,7 +1010,7 @@ impl Ashell {
         self.active_tab
             .as_ref()
             .and_then(|id| self.tabs.iter().find(|t| &t.id == id))
-            .map(TerminalTab::render_snapshot)
+            .map(|t| t.render_snapshot(self.config.keyword_highlight()))
     }
 
     pub(crate) fn active_kind(&self) -> Option<TabKind> {

@@ -215,7 +215,7 @@ impl Ashell {
         };
 
         if let Some(tab) = tab {
-            let snapshot = tab.render_snapshot();
+            let snapshot = tab.render_snapshot(false);
             let display_offset = snapshot.display_offset as i32;
             let rows = snapshot.rows as i32;
 
@@ -275,7 +275,7 @@ impl Ashell {
         let Some(tab) = tab else {
             return None;
         };
-        let snapshot = tab.render_snapshot();
+        let snapshot = tab.render_snapshot(false);
         let display_offset = snapshot.display_offset as i32;
         let rows = snapshot.rows as i32;
 

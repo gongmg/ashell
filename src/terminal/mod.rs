@@ -319,7 +319,7 @@ impl TerminalTab {
         self.term.mode().contains(TermMode::APP_CURSOR)
     }
 
-    pub fn render_snapshot(&self) -> RenderSnapshot {
+    pub fn render_snapshot(&self, keyword_highlight: bool) -> RenderSnapshot {
         let rows = self.rows;
         let cols = self.cols;
         let content = self.term.renderable_content();
@@ -349,9 +349,7 @@ impl TerminalTab {
         }
 
         // Get highlights from cache or recompute, only if keyword_highlight is enabled.
-        let is_enabled = crate::session::config::ConfigStore::load()
-            .map(|c| c.keyword_highlight())
-            .unwrap_or(false);
+        let is_enabled = keyword_highlight;
 
         let highlights = if is_enabled {
             let mut cache = self.highlight_cache.borrow_mut();

@@ -26,7 +26,7 @@ use crate::{
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
-    terminal::{self, TabKind, TerminalTab},
+    terminal::{self, TabKind},
 };
 
 impl Ashell {
@@ -2350,11 +2350,12 @@ impl Ashell {
                     return this.render_home_page(cx).into_any_element();
                 }
                 let is_focused = path == this.focused_pane_path.as_slice();
+                let keyword_highlight = this.config.keyword_highlight();
                 let snapshot = this
                     .tabs
                     .iter()
                     .find(|t| &t.id == tab_id)
-                    .map(TerminalTab::render_snapshot);
+                    .map(|t| t.render_snapshot(keyword_highlight));
                 let Some(snapshot) = snapshot else {
                     return div().into_any_element();
                 };
@@ -2638,7 +2639,7 @@ impl Render for Ashell {
             if let Some(scrollbar) = self.terminal_scrollbars.get(&active_id) {
                 if let Some(new_display_offset) = scrollbar.future_display_offset.take() {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
-                        let current = tab.render_snapshot().display_offset;
+                        let current = tab.render_snapshot(false).display_offset;
                         match new_display_offset.cmp(&current) {
                             std::cmp::Ordering::Greater => {
                                 tab.scroll_up_by(new_display_offset - current)
