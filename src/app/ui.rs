@@ -1,3 +1,4 @@
+use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
     Context, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Render,
@@ -17,7 +18,6 @@ use gpui_component::{
     tab::{Tab, TabBar},
     v_flex,
 };
-use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use rust_i18n::t;
 
 use crate::{
@@ -1984,7 +1984,7 @@ impl Ashell {
     ) -> impl IntoElement {
         let is_macos = cfg!(target_os = "macos");
         let is_fullscreen = window.is_fullscreen();
-        
+
         let is_active = cx.active_window() == Some(window.window_handle());
 
         h_flex()
@@ -1999,9 +1999,17 @@ impl Ashell {
                         .id("window-close")
                         .size(px(12.))
                         .rounded_full()
-                        .bg(if is_active { hsla(3.0 / 360.0, 1.0, 0.67, 1.0) } else { hsla(0.0, 0.0, 0.8, 1.0) }) // Red or Inactive Grey
-                        .group_hover("window-controls", |s| s.bg(hsla(3.0 / 360.0, 1.0, 0.67, 1.0)))
-                        .when(!is_macos, |this| this.window_control_area(gpui::WindowControlArea::Close))
+                        .bg(if is_active {
+                            hsla(3.0 / 360.0, 1.0, 0.67, 1.0)
+                        } else {
+                            hsla(0.0, 0.0, 0.8, 1.0)
+                        }) // Red or Inactive Grey
+                        .group_hover("window-controls", |s| {
+                            s.bg(hsla(3.0 / 360.0, 1.0, 0.67, 1.0))
+                        })
+                        .when(!is_macos, |this| {
+                            this.window_control_area(gpui::WindowControlArea::Close)
+                        })
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.save_layout_state(window, cx);
                             window.remove_window();
@@ -2020,7 +2028,7 @@ impl Ashell {
                                 .text_color(hsla(3.0 / 360.0, 1.0, 0.15, 0.7))
                                 .opacity(0.0)
                                 .group_hover("window-controls", |s| s.opacity(1.0))
-                                .child("✕")
+                                .child("✕"),
                         ),
                 )
                 .child(
@@ -2028,9 +2036,17 @@ impl Ashell {
                         .id("window-minimize")
                         .size(px(12.))
                         .rounded_full()
-                        .bg(if is_active { hsla(39.0 / 360.0, 1.0, 0.59, 1.0) } else { hsla(0.0, 0.0, 0.8, 1.0) }) // Yellow or Inactive Grey
-                        .group_hover("window-controls", |s| s.bg(hsla(39.0 / 360.0, 1.0, 0.59, 1.0)))
-                        .when(!is_macos, |this| this.window_control_area(gpui::WindowControlArea::Min))
+                        .bg(if is_active {
+                            hsla(39.0 / 360.0, 1.0, 0.59, 1.0)
+                        } else {
+                            hsla(0.0, 0.0, 0.8, 1.0)
+                        }) // Yellow or Inactive Grey
+                        .group_hover("window-controls", |s| {
+                            s.bg(hsla(39.0 / 360.0, 1.0, 0.59, 1.0))
+                        })
+                        .when(!is_macos, |this| {
+                            this.window_control_area(gpui::WindowControlArea::Min)
+                        })
                         .on_click(|_, window, _| window.minimize_window())
                         .hover(|s| s.bg(hsla(39.0 / 360.0, 1.0, 0.49, 1.0)))
                         .active(|s| s.bg(hsla(39.0 / 360.0, 1.0, 0.39, 1.0)))
@@ -2046,7 +2062,7 @@ impl Ashell {
                                 .text_color(hsla(39.0 / 360.0, 1.0, 0.15, 0.8))
                                 .opacity(0.0)
                                 .group_hover("window-controls", |s| s.opacity(1.0))
-                                .child("−")
+                                .child("−"),
                         ),
                 )
                 .child(
@@ -2054,9 +2070,17 @@ impl Ashell {
                         .id("window-maximize")
                         .size(px(12.))
                         .rounded_full()
-                        .bg(if is_active { hsla(127.0 / 360.0, 0.68, 0.47, 1.0) } else { hsla(0.0, 0.0, 0.8, 1.0) }) // Green or Inactive Grey
-                        .group_hover("window-controls", |s| s.bg(hsla(127.0 / 360.0, 0.68, 0.47, 1.0)))
-                        .when(!is_macos, |this| this.window_control_area(gpui::WindowControlArea::Max))
+                        .bg(if is_active {
+                            hsla(127.0 / 360.0, 0.68, 0.47, 1.0)
+                        } else {
+                            hsla(0.0, 0.0, 0.8, 1.0)
+                        }) // Green or Inactive Grey
+                        .group_hover("window-controls", |s| {
+                            s.bg(hsla(127.0 / 360.0, 0.68, 0.47, 1.0))
+                        })
+                        .when(!is_macos, |this| {
+                            this.window_control_area(gpui::WindowControlArea::Max)
+                        })
                         .on_click(|_, window, _| {
                             if window.is_fullscreen() {
                                 window.toggle_fullscreen();
@@ -2081,7 +2105,7 @@ impl Ashell {
                                 .text_color(hsla(127.0 / 360.0, 1.0, 0.15, 0.8))
                                 .opacity(0.0)
                                 .group_hover("window-controls", |s| s.opacity(1.0))
-                                .child("+")
+                                .child("+"),
                         ),
                 )
             })
@@ -2334,7 +2358,10 @@ impl Ashell {
                 let font_size = px(this.terminal_font_size);
                 let line_height = px(this.terminal_line_height());
                 let cell_width = px(this.terminal_cell_width());
-                let is_url_hovered = this.hovered_url.as_ref().map_or(false, |hu| hu.tab_id == *tab_id);
+                let is_url_hovered = this
+                    .hovered_url
+                    .as_ref()
+                    .map_or(false, |hu| hu.tab_id == *tab_id);
                 let mut el = div()
                     .size_full()
                     .overflow_hidden()
@@ -2375,44 +2402,38 @@ impl Ashell {
                     .and_then(|tab| tab.disconnected_reason.clone());
                 if let Some(reason) = disconnected_reason {
                     let tab_id_for_reconnect = tab_id.clone();
-                    el = div()
-                        .size_full()
-                        .relative()
-                        .child(el)
-                        .child(
-                            div()
-                                .absolute()
-                                .bottom_0()
-                                .left_0()
-                                .right_0()
+                    el = div().size_full().relative().child(el).child(
+                        div().absolute().bottom_0().left_0().right_0().child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_2()
+                                .px_3()
+                                .py_1()
+                                .bg(cx.theme().danger.opacity(0.15))
                                 .child(
-                                    h_flex()
-                                        .w_full()
-                                        .items_center()
-                                        .gap_2()
-                                        .px_3()
-                                        .py_1()
-                                        .bg(cx.theme().danger.opacity(0.15))
+                                    div()
+                                        .text_size(rems(0.85))
+                                        .text_color(cx.theme().danger)
                                         .child(
-                                            div()
-                                                .text_size(rems(0.85))
-                                                .text_color(cx.theme().danger)
-                                                .child(t!("session_disconnected", "reason" = reason).to_string()),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(rems(0.85))
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(format!("— {}", t!("press_enter_to_reconnect"))),
-                                        )
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.retry_disconnected_tab(&tab_id_for_reconnect, cx);
-                                            }),
+                                            t!("session_disconnected", "reason" = reason)
+                                                .to_string(),
                                         ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(rems(0.85))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("— {}", t!("press_enter_to_reconnect"))),
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.retry_disconnected_tab(&tab_id_for_reconnect, cx);
+                                    }),
                                 ),
-                        );
+                        ),
+                    );
                 }
                 let indicator_color = this
                     .tabs

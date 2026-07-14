@@ -351,8 +351,8 @@ impl ConfigStore {
         }
 
         let mut cache = if path.exists() {
-            let raw_bytes = fs::read(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let raw_bytes =
+                fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
             let hardware_uuid = get_hardware_uuid();
             match decrypt_config(&raw_bytes, &hardware_uuid) {
                 Ok(cache) => cache,
@@ -1031,7 +1031,12 @@ fn get_hardware_uuid() -> String {
     #[cfg(target_os = "windows")]
     {
         if let Ok(output) = std::process::Command::new("reg")
-            .args(&["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"])
+            .args(&[
+                "query",
+                "HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+                "/v",
+                "MachineGuid",
+            ])
             .output()
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1069,17 +1074,17 @@ fn encrypt_config(config: &ConfigFile, password: &str) -> Result<Vec<u8>> {
     let mut nonce = [0u8; 24];
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
-    
+
     let mut key = [0u8; 32];
     Argon2::default()
         .hash_password_into(password.as_bytes(), &salt, &mut key)
         .map_err(|err| anyhow::anyhow!("derive encryption key: {err}"))?;
-        
+
     let plaintext = serde_json::to_vec(config).context("serialize config")?;
     let ciphertext = XChaCha20Poly1305::new((&key).into())
         .encrypt(XNonce::from_slice(&nonce), plaintext.as_ref())
         .map_err(|_| anyhow::anyhow!("encrypt config payload"))?;
-        
+
     serde_json::to_vec_pretty(&EncryptedConfigEnvelope {
         format_version: 1,
         kdf: "argon2id".to_string(),
@@ -1100,7 +1105,9 @@ fn decrypt_config(raw: &[u8], password: &str) -> Result<ConfigFile> {
     {
         return Err(anyhow::anyhow!("unsupported encrypted config format"));
     }
-    let salt = STANDARD.decode(envelope.salt).context("decode config salt")?;
+    let salt = STANDARD
+        .decode(envelope.salt)
+        .context("decode config salt")?;
     let nonce = STANDARD
         .decode(envelope.nonce)
         .context("decode config nonce")?;
@@ -1110,16 +1117,18 @@ fn decrypt_config(raw: &[u8], password: &str) -> Result<ConfigFile> {
     let ciphertext = STANDARD
         .decode(envelope.payload)
         .context("decode encrypted config payload")?;
-        
+
     let mut key = [0u8; 32];
     Argon2::default()
         .hash_password_into(password.as_bytes(), &salt, &mut key)
         .map_err(|err| anyhow::anyhow!("derive encryption key: {err}"))?;
-        
+
     let plaintext = XChaCha20Poly1305::new((&key).into())
         .decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref())
-        .map_err(|_| anyhow::anyhow!("cannot decrypt config; hardware UUID mismatch or corrupted data"))?;
-        
+        .map_err(|_| {
+            anyhow::anyhow!("cannot decrypt config; hardware UUID mismatch or corrupted data")
+        })?;
+
     serde_json::from_slice(&plaintext).context("parse decrypted config")
 }
 
@@ -1138,17 +1147,16 @@ mod tests {
         let config = ConfigFile::default();
         let password = "test-password-123";
         let encrypted = encrypt_config(&config, password).unwrap();
-        
+
         // Ensure it doesn't contain plain text fields of default config
         let encrypted_str = String::from_utf8_lossy(&encrypted);
         assert!(!encrypted_str.contains("Maple Mono NF CN"));
         assert!(encrypted_str.contains("argon2id"));
-        
+
         let decrypted = decrypt_config(&encrypted, password).unwrap();
         assert_eq!(decrypted.terminal_font_family, config.terminal_font_family);
-        
+
         // Decrypt with wrong password should fail
         assert!(decrypt_config(&encrypted, "wrong-password").is_err());
     }
 }
-

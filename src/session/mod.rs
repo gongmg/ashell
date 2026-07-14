@@ -102,9 +102,7 @@ impl Ashell {
 
         let mut session = match self.ssh_auth_method {
             AuthMethod::Password => Session::password(host, port, user, password),
-            AuthMethod::Key => {
-                Session::key(host, port, user, key_path, key_inline, passphrase)
-            }
+            AuthMethod::Key => Session::key(host, port, user, key_path, key_inline, passphrase),
             AuthMethod::Config => {
                 // Force key_inline to empty — config mode never uses inline key content.
                 // The backend will try default keys from ~/.ssh/ if no explicit key path is set.
@@ -785,7 +783,11 @@ impl Ashell {
     }
 
     pub(crate) fn handle_tab_close(&mut self, id: String) {
-        if self.connection_progress.as_ref().map_or(false, |p| p.tab_id == id) {
+        if self
+            .connection_progress
+            .as_ref()
+            .map_or(false, |p| p.tab_id == id)
+        {
             self.connection_progress = None;
         }
         let group_ix = self

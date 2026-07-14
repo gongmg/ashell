@@ -1,7 +1,7 @@
 pub mod custom_blocks;
 pub mod element;
-pub mod input;
 pub mod highlight;
+pub mod input;
 
 use std::sync::mpsc::Sender;
 
@@ -134,7 +134,12 @@ pub struct TerminalTab {
     pub rows: u16,
     pub backend: std::sync::Arc<std::sync::Mutex<BackendTx>>,
     pub scroll_pixel_y: f32,
-    pub(crate) highlight_cache: std::cell::RefCell<Option<(Vec<RenderCell>, std::collections::HashMap<(i32, i32), gpui::Hsla>)>>,
+    pub(crate) highlight_cache: std::cell::RefCell<
+        Option<(
+            Vec<RenderCell>,
+            std::collections::HashMap<(i32, i32), gpui::Hsla>,
+        )>,
+    >,
 }
 
 #[derive(Clone, Copy)]
@@ -348,9 +353,9 @@ impl TerminalTab {
 
         let highlights = if is_enabled {
             let mut cache = self.highlight_cache.borrow_mut();
-            let cache_valid = cache.as_ref().is_some_and(|(cached_cells, _)| {
-                cached_cells == &cells
-            });
+            let cache_valid = cache
+                .as_ref()
+                .is_some_and(|(cached_cells, _)| cached_cells == &cells);
             if cache_valid {
                 cache.as_ref().unwrap().1.clone()
             } else {
@@ -503,7 +508,10 @@ fn viewport_selection_from_range(
     } = selection.as_ref().copied()?;
 
     let top_point = viewport_to_point(display_offset, Point::new(0, Column(0)));
-    let bottom_point = viewport_to_point(display_offset, Point::new(rows.saturating_sub(1), Column(0)));
+    let bottom_point = viewport_to_point(
+        display_offset,
+        Point::new(rows.saturating_sub(1), Column(0)),
+    );
 
     let top_line = top_point.line;
     let bottom_line = bottom_point.line;
@@ -521,7 +529,10 @@ fn viewport_selection_from_range(
     } else if end.line > bottom_line {
         Point::new(rows.saturating_sub(1), Column(cols.saturating_sub(1)))
     } else {
-        point_to_viewport(display_offset, end).unwrap_or(Point::new(rows.saturating_sub(1), Column(cols.saturating_sub(1))))
+        point_to_viewport(display_offset, end).unwrap_or(Point::new(
+            rows.saturating_sub(1),
+            Column(cols.saturating_sub(1)),
+        ))
     };
 
     Some(ViewportSelection {

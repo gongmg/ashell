@@ -179,7 +179,14 @@ pub(crate) fn sync_macos_launch_environment() {
 }
 
 fn read_proxy_from_env() -> Option<(String, String, Option<u16>, String, String)> {
-    let vars = ["ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"];
+    let vars = [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ];
     for var in vars {
         if let Ok(val) = std::env::var(var) {
             if val.is_empty() {
@@ -301,13 +308,13 @@ pub(crate) fn open_main_window(cx: &mut App) {
         let focus_handle = view.read(cx).focus_handle.clone();
         window.focus(&focus_handle, cx);
 
-
-
         let view_clone = view.clone();
         window.on_window_should_close(cx, move |window: &mut gpui::Window, cx: &mut gpui::App| {
             let handle = window.window_handle();
             if !cx.windows().contains(&handle) {
-                tracing::warn!("[ui] window not found in app during close, skipping save layout state.");
+                tracing::warn!(
+                    "[ui] window not found in app during close, skipping save layout state."
+                );
                 return true;
             }
             view_clone.read(cx).save_layout_state(window, cx);

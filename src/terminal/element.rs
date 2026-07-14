@@ -375,7 +375,12 @@ impl TerminalElement {
     fn layout_grid(
         &self,
         cx: &App,
-    ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>, Vec<LayoutCustomBlock>, Vec<LayoutUnderline>) {
+    ) -> (
+        Vec<LayoutRect>,
+        Vec<BatchedTextRun>,
+        Vec<LayoutCustomBlock>,
+        Vec<LayoutUnderline>,
+    ) {
         let view_read = self.view.read(cx);
         let hovered_url = view_read.hovered_url.clone();
 
@@ -439,12 +444,18 @@ impl TerminalElement {
             // Apply hover underline if mouse is hovering over this URL
             if let Some(hu) = &hovered_url {
                 if hu.tab_id == self.tab_id
-                    && hu.cells.contains(&(render_cell.row as usize, render_cell.col as usize))
+                    && hu
+                        .cells
+                        .contains(&(render_cell.row as usize, render_cell.col as usize))
                 {
                     underlines.push(LayoutUnderline {
                         row: render_cell.row,
                         col: render_cell.col,
-                        cells: if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 },
+                        cells: if cell.flags.contains(Flags::WIDE_CHAR) {
+                            2
+                        } else {
+                            1
+                        },
                         color: style.color,
                     });
                 }
@@ -515,7 +526,9 @@ impl TerminalElement {
         let cursor_style = self.view.read(cx).cursor_style;
         let show_cursor = match cursor_style {
             CursorStyle::Blink | CursorStyle::BeamBlink => {
-                if let Ok(duration) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                if let Ok(duration) =
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                {
                     (duration.as_millis() / 600) % 2 == 0
                 } else {
                     true
@@ -595,7 +608,7 @@ impl Element for TerminalElement {
         let tab_id = self.tab_id.clone();
         let _ = view.update(cx, |this, cx| {
             let old_bounds = this.terminal_bounds.insert(tab_id.clone(), bounds);
-            
+
             // Sync PTY size unconditionally on every prepaint layout pass to ensure
             // absolute synchronization with GPUI layout regardless of intermediate events.
             let line_height = this.terminal_line_height();
@@ -604,11 +617,11 @@ impl Element for TerminalElement {
             let h = bounds.size.height.as_f32();
             let cols = (w / cell_width).floor().max(1.0) as u16;
             let rows = (h / line_height).floor().max(1.0) as u16;
-            
+
             if let Some(tab) = this.tabs.iter_mut().find(|t| t.id == tab_id) {
                 tab.resize(cols, rows);
             }
-            
+
             if old_bounds != Some(bounds) {
                 cx.notify();
             }
@@ -640,9 +653,14 @@ impl Element for TerminalElement {
     ) {
         // Compute a vertical offset to center the text grid vertically,
         // distributing the leftover pixel remainder evenly to the top and bottom.
-        let grid_height = prepaint.metrics.line_height * (prepaint.bounds.size.height.as_f32() / prepaint.metrics.line_height.as_f32()).floor();
+        let grid_height = prepaint.metrics.line_height
+            * (prepaint.bounds.size.height.as_f32() / prepaint.metrics.line_height.as_f32())
+                .floor();
         let y_offset = ((prepaint.bounds.size.height - grid_height) / 2.0).max(px(0.0));
-        let draw_origin = point(prepaint.bounds.origin.x, prepaint.bounds.origin.y + y_offset);
+        let draw_origin = point(
+            prepaint.bounds.origin.x,
+            prepaint.bounds.origin.y + y_offset,
+        );
 
         for rect in &prepaint.rects {
             rect.paint(draw_origin, prepaint.metrics, window);
@@ -657,10 +675,10 @@ impl Element for TerminalElement {
         }
 
         for block in &prepaint.custom_blocks {
-            let x = draw_origin.x.as_f32()
-                + block.col as f32 * prepaint.metrics.cell_width.as_f32();
-            let y = draw_origin.y.as_f32()
-                + block.row as f32 * prepaint.metrics.line_height.as_f32();
+            let x =
+                draw_origin.x.as_f32() + block.col as f32 * prepaint.metrics.cell_width.as_f32();
+            let y =
+                draw_origin.y.as_f32() + block.row as f32 * prepaint.metrics.line_height.as_f32();
             paint_custom_block(
                 window,
                 block.c,
@@ -801,10 +819,7 @@ fn merge_underlines(mut underlines: Vec<LayoutUnderline>) -> Vec<LayoutUnderline
 
     for u in underlines {
         if let Some(last) = merged.last_mut() {
-            if last.row == u.row
-                && last.color == u.color
-                && last.col + last.cells as i32 == u.col
-            {
+            if last.row == u.row && last.color == u.color && last.col + last.cells as i32 == u.col {
                 last.cells += u.cells;
                 continue;
             }
