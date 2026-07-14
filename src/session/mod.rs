@@ -785,6 +785,9 @@ impl Ashell {
     }
 
     pub(crate) fn handle_tab_close(&mut self, id: String) {
+        if self.connection_progress.as_ref().map_or(false, |p| p.tab_id == id) {
+            self.connection_progress = None;
+        }
         let group_ix = self
             .tab_groups
             .iter()
