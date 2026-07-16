@@ -785,6 +785,16 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
             }
         }
 
+        // ── 32. URLs ───────────────────────────────────────────
+        for m in find_urls(text) {
+            let url_len = find_url_len(&text[m..]);
+            let start_col = byte_to_col[m];
+            let end_col = byte_to_col[(m + url_len - 1).min(byte_to_col.len() - 1)];
+            for c in start_col..=end_col {
+                map.entry((row_i32, c)).or_insert(colors.url);
+            }
+        }
+
         // ── 33. Port numbers ───────────────────────────────────
         for m in find_ports(text) {
             let port_len = find_port_len(&text[m..]);
@@ -792,21 +802,6 @@ pub fn highlight_cells(cells: &[RenderCell], rows: usize) -> HashMap<(i32, i32),
             let end_col = byte_to_col[(m + port_len - 1).min(byte_to_col.len() - 1)];
             for c in start_col..=end_col {
                 map.entry((row_i32, c)).or_insert(colors.port);
-            }
-        }
-    }
-    // ── 32. URLs (Logical lines for wrapping support) ───────────
-    let logical_lines = build_logical_lines(cells, rows);
-    for line in &logical_lines {
-        let text = line.text.as_str();
-        for m in find_urls(text) {
-            let url_len = find_url_len(&text[m..]);
-            for i in 0..url_len {
-                let idx = m + i;
-                if idx < line.byte_to_cell.len() {
-                    let (r, c) = line.byte_to_cell[idx];
-                    map.entry((r as i32, c as i32)).or_insert(colors.url);
-                }
             }
         }
     }
@@ -934,107 +929,4 @@ fn find_port_len(text: &str) -> usize {
         }
     }
     len
-}
-
-#[derive(Clone)]
-pub struct LogicalLine<'a> {
-    pub text: String,
-    pub byte_to_cell: Vec<(usize, usize)>,
-    pub row_cells: Vec<&'a RenderCell>,
-}
-
-pub fn build_logical_lines<'a>(cells: &'a [RenderCell], rows: usize) -> Vec<LogicalLine<'a>> {
-    let mut row_chars: Vec<Vec<&RenderCell>> = vec![Vec::with_capacity(128); rows];
-    for rc in cells {
-        if rc.row < 0 || (rc.row as usize) >= rows {
-            continue;
-        }
-        row_chars[rc.row as usize].push(rc);
-    }
-    for row in row_chars.iter_mut() {
-        row.sort_by_key(|rc| rc.col);
-    }
-
-    let mut logical_lines = Vec::new();
-    let mut current_line: Option<LogicalLine> = None;
-
-    for (row_idx, row_cells) in row_chars.into_iter().enumerate() {
-        if row_cells.is_empty() {
-            if let Some(line) = current_line.take() {
-                logical_lines.push(line);
-            }
-            continue;
-        }
-
-        let wraps_from_prev = row_idx > 0 && {
-            current_line.as_ref().map_or(false, |line| {
-                line.row_cells.last().map_or(false, |rc| {
-                    rc.cell
-                        .flags
-                        .contains(alacritty_terminal::term::cell::Flags::WRAPLINE)
-                })
-            })
-        };
-
-        if !wraps_from_prev {
-            if let Some(line) = current_line.take() {
-                logical_lines.push(line);
-            }
-        }
-
-        let mut line = current_line.take().unwrap_or_else(|| LogicalLine {
-            text: String::with_capacity(128),
-            byte_to_cell: Vec::with_capacity(128),
-            row_cells: Vec::new(),
-        });
-
-        for rc in row_cells {
-            line.text.push(rc.cell.c);
-            let end_len = line.text.len();
-            while line.byte_to_cell.len() < end_len {
-                line.byte_to_cell.push((rc.row as usize, rc.col as usize));
-            }
-            line.row_cells.push(rc);
-        }
-
-        current_line = Some(line);
-    }
-
-    if let Some(line) = current_line.take() {
-        logical_lines.push(line);
-    }
-
-    logical_lines
-}
-
-pub fn find_url_at_cell(
-    cells: &[RenderCell],
-    rows: usize,
-    row: usize,
-    col: usize,
-) -> Option<(String, Vec<(usize, usize)>)> {
-    let logical_lines = build_logical_lines(cells, rows);
-    for line in logical_lines {
-        let text = line.text.as_str();
-        for m in find_urls(text) {
-            let url_len = find_url_len(&text[m..]);
-            let mut url_cells = Vec::with_capacity(url_len);
-            let mut matched = false;
-            for i in 0..url_len {
-                let idx = m + i;
-                if idx < line.byte_to_cell.len() {
-                    let (r, c) = line.byte_to_cell[idx];
-                    if r == row && c == col {
-                        matched = true;
-                    }
-                    url_cells.push((r, c));
-                }
-            }
-            if matched {
-                let url_str = text[m..m + url_len].to_string();
-                return Some((url_str, url_cells));
-            }
-        }
-    }
-    None
 }

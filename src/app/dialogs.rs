@@ -11,7 +11,7 @@ use gpui_component::{
     input::Input,
     menu::{DropdownMenu as _, PopupMenuItem},
     progress::Progress,
-    scroll::{Scrollbar, ScrollbarShow},
+    scroll::{ScrollableElement as _, Scrollbar, ScrollbarShow},
     switch::Switch,
     v_flex,
 };
@@ -28,6 +28,7 @@ impl Ashell {
 
         let view = cx.entity();
         let session_name_input = self.session_name_input.clone();
+        let session_group_input = self.session_group_input.clone();
         let host_input = self.host_input.clone();
         let focus_host_input = host_input.clone();
         let port_input = self.port_input.clone();
@@ -58,6 +59,7 @@ impl Ashell {
                 .content({
                     let view = view.clone();
                     let session_name_input = session_name_input.clone();
+                    let session_group_input = session_group_input.clone();
                     let host_input = host_input.clone();
                     let port_input = port_input.clone();
                     let user_input = user_input.clone();
@@ -70,16 +72,22 @@ impl Ashell {
                     let proxy_user_input = proxy_user_input.clone();
                     let proxy_password_input = proxy_password_input.clone();
                     move |content, window, cx| {
-                        let auth_method = view.read(cx).ssh_auth_method;
-                        let is_password = auth_method == AuthMethod::Password;
-                        let is_key = auth_method == AuthMethod::Key;
-                        let is_config = auth_method == AuthMethod::Config;
+                        let is_password = view.read(cx).ssh_auth_method == AuthMethod::Password;
                         let is_editing = view.read(cx).editing_session_id.is_some();
                         let proxy_type = view.read(cx).ssh_proxy_type.clone();
                         let show_proxy_fields = proxy_type != "none";
                         content.child(
                             v_flex()
                                 .gap_3()
+                                .child(Input::new(&session_name_input).tab_index(0))
+                                .child(Input::new(&session_group_input).tab_index(1))
+                                .child(Input::new(&host_input).tab_index(1))
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(Input::new(&port_input).w(px(96.)).tab_index(2))
+                                        .child(Input::new(&user_input).flex_1().tab_index(3)),
+                                )
                                 .child(
                                     h_flex()
                                         .gap_2()
@@ -100,7 +108,7 @@ impl Ashell {
                                         .child(
                                             Button::new("ssh-auth-key")
                                                 .label(t!("key").to_string())
-                                                .when(is_key, |button| button.primary())
+                                                .when(!is_password, |button| button.primary())
                                                 .on_click(window.listener_for(
                                                     &view,
                                                     |this, _, _, cx| {
@@ -110,42 +118,82 @@ impl Ashell {
                                                         )
                                                     },
                                                 )),
-                                        )
-                                        .child(
-                                            Button::new("ssh-auth-config")
-                                                .label(t!("ssh_config").to_string())
-                                                .when(is_config, |button| button.primary())
-                                                .on_click(window.listener_for(
-                                                    &view,
-                                                    |this, _, _, cx| {
-                                                        this.set_ssh_auth_method(
-                                                            AuthMethod::Config,
-                                                            cx,
-                                                        )
-                                                    },
-                                                )),
                                         ),
                                 )
-                                .when(!is_config, |this| {
-                                    this.child(Input::new(&session_name_input).tab_index(0))
-                                        .child(Input::new(&host_input).tab_index(1))
-                                        .child(
-                                            h_flex()
+                                .when(is_password, |this| {
+                                    let profiles =
+                                        view.read(cx).config.credential_profiles().to_vec();
+                                    this.when(!profiles.is_empty(), |this| {
+                                        this.child(
+                                            v_flex()
                                                 .gap_2()
                                                 .child(
-                                                    Input::new(&port_input).w(px(96.)).tab_index(2),
+                                                    div()
+                                                        .text_sm()
+                                                        .font_weight(FontWeight::BOLD)
+                                                        .child(
+                                                            t!("credential_profiles").to_string(),
+                                                        ),
                                                 )
-                                                .child(
-                                                    Input::new(&user_input).flex_1().tab_index(3),
-                                                ),
+                                                .children(profiles.into_iter().map(|profile| {
+                                                    let profile_id = profile.id.clone();
+                                                    let delete_id = profile.id.clone();
+                                                    h_flex()
+                                                        .gap_2()
+                                                        .child(
+                                                            Button::new(SharedString::from(
+                                                                format!(
+                                                                    "credential-profile-{}",
+                                                                    profile.id
+                                                                ),
+                                                            ))
+                                                            .small()
+                                                            .ghost()
+                                                            .flex_1()
+                                                            .justify_start()
+                                                            .label(format!(
+                                                                "{}  {}",
+                                                                profile.name, profile.user
+                                                            ))
+                                                            .on_click(window.listener_for(
+                                                                &view,
+                                                                move |this, _, window, cx| {
+                                                                    this.apply_credential_profile(
+                                                                        profile_id.clone(),
+                                                                        window,
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Button::new(SharedString::from(
+                                                                format!(
+                                                                    "credential-profile-delete-{}",
+                                                                    delete_id
+                                                                ),
+                                                            ))
+                                                            .small()
+                                                            .ghost()
+                                                            .icon(IconName::Close)
+                                                            .on_click(window.listener_for(
+                                                                &view,
+                                                                move |this, _, _, cx| {
+                                                                    this.config
+                                                                        .remove_credential_profile(
+                                                                            &delete_id,
+                                                                        );
+                                                                    let _ = this.config.save();
+                                                                    cx.notify();
+                                                                },
+                                                            )),
+                                                        )
+                                                })),
                                         )
+                                    })
+                                    .child(Input::new(&password_input).mask_toggle().tab_index(4))
                                 })
-                                .when(is_password, |this| {
-                                    this.child(
-                                        Input::new(&password_input).mask_toggle().tab_index(4),
-                                    )
-                                })
-                                .when(is_key, |this| {
+                                .when(!is_password, |this| {
                                     this.child(
                                         h_flex()
                                             .gap_2()
@@ -186,155 +234,76 @@ impl Ashell {
                                     .child(Input::new(&key_inline_input).h(px(128.)).tab_index(5))
                                     .child(Input::new(&passphrase_input).mask_toggle().tab_index(6))
                                 })
-                                .when(is_config, |this| {
-                                    let entries = view.read(cx).ssh_config_entries.clone();
-                                    let selected = view.read(cx).ssh_config_selected;
-                                    let theme = cx.theme();
-                                    if entries.is_empty() {
-                                        this.child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(theme.muted_foreground)
-                                                .child(t!("ssh_config_empty").to_string()),
-                                        )
-                                    } else {
-                                        this.child(
-                                            div()
-                                                .h(px(192.))
-                                                .id("ssh-config-list")
-                                                .track_scroll(
-                                                    &view.read(cx).connection_scroll_handle,
-                                                )
-                                                .overflow_y_scroll()
-                                                .border_1()
-                                                .border_color(theme.border)
-                                                .rounded_md()
-                                                .children(entries.iter().enumerate().map(
-                                                    |(i, entry)| {
-                                                        let is_selected = selected == Some(i);
-                                                        let label = if entry.user.is_empty() {
-                                                            format!(
-                                                                "{}:{}",
-                                                                entry.hostname, entry.port
-                                                            )
-                                                        } else {
-                                                            format!(
-                                                                "{}@{}:{}",
-                                                                entry.user,
-                                                                entry.hostname,
-                                                                entry.port
-                                                            )
-                                                        };
-                                                        let alias_label =
-                                                            if entry.host_alias == entry.hostname {
-                                                                String::new()
-                                                            } else {
-                                                                format!(" ({})", entry.host_alias)
-                                                            };
-                                                        let view_clone = view.clone();
-                                                        div()
-                                                            .id(("ssh-config-entry", i))
-                                                            .px_2()
-                                                            .py_1()
-                                                            .when(is_selected, |el| {
-                                                                el.bg(theme.selection)
-                                                            })
-                                                            .cursor_pointer()
-                                                            .hover(|el| el.bg(theme.selection))
-                                                            .text_sm()
-                                                            .child(format!("{label}{alias_label}"))
-                                                            .on_click(window.listener_for(
-                                                                &view_clone,
-                                                                move |this, _, window, cx| {
-                                                                    this.select_ssh_config_entry(
-                                                                        i, window, cx,
-                                                                    );
-                                                                },
-                                                            ))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::BOLD)
+                                        .child(t!("proxy").to_string()),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("proxy-none")
+                                                .label(t!("proxy_none").to_string())
+                                                .when(proxy_type == "none", |button| {
+                                                    button.primary()
+                                                })
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, _, cx| {
+                                                        this.set_ssh_proxy_type(
+                                                            "none".to_string(),
+                                                            cx,
+                                                        )
                                                     },
                                                 )),
                                         )
-                                    }
-                                })
-                                .when(!is_config, |this| {
+                                        .child(
+                                            Button::new("proxy-socks5")
+                                                .label("SOCKS5")
+                                                .when(proxy_type == "socks5", |button| {
+                                                    button.primary()
+                                                })
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, _, cx| {
+                                                        this.set_ssh_proxy_type(
+                                                            "socks5".to_string(),
+                                                            cx,
+                                                        )
+                                                    },
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new("proxy-http")
+                                                .label("HTTP")
+                                                .when(proxy_type == "http", |button| {
+                                                    button.primary()
+                                                })
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, _, cx| {
+                                                        this.set_ssh_proxy_type(
+                                                            "http".to_string(),
+                                                            cx,
+                                                        )
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                .when(show_proxy_fields, |this| {
                                     this.child(
-                                        div()
-                                            .text_sm()
-                                            .font_weight(FontWeight::BOLD)
-                                            .child(t!("proxy").to_string()),
+                                        h_flex()
+                                            .gap_2()
+                                            .child(Input::new(&proxy_host_input).flex_1())
+                                            .child(Input::new(&proxy_port_input).w(px(96.))),
                                     )
                                     .child(
                                         h_flex()
                                             .gap_2()
-                                            .child(
-                                                Button::new("proxy-none")
-                                                    .label(t!("proxy_none").to_string())
-                                                    .when(proxy_type == "none", |button| {
-                                                        button.primary()
-                                                    })
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        |this, _, _, cx| {
-                                                            this.set_ssh_proxy_type(
-                                                                "none".to_string(),
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )),
-                                            )
-                                            .child(
-                                                Button::new("proxy-socks5")
-                                                    .label("SOCKS5")
-                                                    .when(proxy_type == "socks5", |button| {
-                                                        button.primary()
-                                                    })
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        |this, _, _, cx| {
-                                                            this.set_ssh_proxy_type(
-                                                                "socks5".to_string(),
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )),
-                                            )
-                                            .child(
-                                                Button::new("proxy-http")
-                                                    .label("HTTP")
-                                                    .when(proxy_type == "http", |button| {
-                                                        button.primary()
-                                                    })
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        |this, _, _, cx| {
-                                                            this.set_ssh_proxy_type(
-                                                                "http".to_string(),
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )),
-                                            ),
-                                    )
-                                    .when(
-                                        show_proxy_fields,
-                                        |this| {
-                                            this.child(
-                                                h_flex()
-                                                    .gap_2()
-                                                    .child(Input::new(&proxy_host_input).flex_1())
-                                                    .child(
-                                                        Input::new(&proxy_port_input).w(px(96.)),
-                                                    ),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .gap_2()
-                                                    .child(Input::new(&proxy_user_input).flex_1())
-                                                    .child(
-                                                        Input::new(&proxy_password_input).flex_1(),
-                                                    ),
-                                            )
-                                        },
+                                            .child(Input::new(&proxy_user_input).flex_1())
+                                            .child(Input::new(&proxy_password_input).flex_1()),
                                     )
                                 })
                                 .child(
@@ -353,23 +322,21 @@ impl Ashell {
                                                     },
                                                 )),
                                         )
-                                        .when(!is_config, |this| {
-                                            this.child(
-                                                Button::new("connect-ssh-confirm")
-                                                    .primary()
-                                                    .label(if is_editing {
-                                                        t!("save")
-                                                    } else {
-                                                        t!("connect")
-                                                    })
-                                                    .on_click(window.listener_for(
-                                                        &view,
-                                                        |this, _, window, cx| {
-                                                            this.connect_ssh(window, cx)
-                                                        },
-                                                    )),
-                                            )
-                                        }),
+                                        .child(
+                                            Button::new("connect-ssh-confirm")
+                                                .primary()
+                                                .label(if is_editing {
+                                                    t!("save")
+                                                } else {
+                                                    t!("connect")
+                                                })
+                                                .on_click(window.listener_for(
+                                                    &view,
+                                                    |this, _, window, cx| {
+                                                        this.connect_ssh(window, cx)
+                                                    },
+                                                )),
+                                        ),
                                 ),
                         )
                     }
@@ -379,6 +346,286 @@ impl Ashell {
             window.focus(&focus_host_input.read(cx).focus_handle(cx), cx);
         });
     }
+
+    pub(crate) fn show_command_history_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::CommandHistory);
+        Self::set_input_value(&self.command_history_input, "", window, cx);
+
+        let view = cx.entity();
+        let search_input = self.command_history_input.clone();
+        let focus_search_input = search_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("command_history").to_string())
+                .w(px(620.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let search_input = search_input.clone();
+                    move |content, window, cx| {
+                        let query = search_input.read(cx).value().trim().to_ascii_lowercase();
+                        let mut entries = view.read(cx).config.command_history().to_vec();
+                        if !query.is_empty() {
+                            entries.retain(|entry| {
+                                entry.command.to_ascii_lowercase().contains(&query)
+                            });
+                        }
+                        let entries_empty = entries.is_empty();
+                        content.child(
+                            v_flex()
+                                .gap_3()
+                                .child(Input::new(&search_input).tab_index(0))
+                                .child(
+                                    v_flex()
+                                        .max_h(px(420.))
+                                        .overflow_y_scrollbar()
+                                        .gap_2()
+                                        .children(entries.into_iter().enumerate().map(
+                                            |(ix, entry)| {
+                                                let command = entry.command.clone();
+                                                let delete_command = entry.command.clone();
+                                                h_flex()
+                                                    .gap_2()
+                                                    .child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "history-{ix}"
+                                                        )))
+                                                        .ghost()
+                                                        .flex_1()
+                                                        .justify_start()
+                                                        .label(format!(
+                                                            "{}  ({})",
+                                                            entry.command, entry.count
+                                                        ))
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            move |this, _, window, cx| {
+                                                                this.active_dialog = None;
+                                                                this.run_terminal_command(
+                                                                    &command, window, cx,
+                                                                );
+                                                                window.close_dialog(cx);
+                                                                cx.notify();
+                                                            },
+                                                        )),
+                                                    )
+                                                    .child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "history-delete-{ix}"
+                                                        )))
+                                                        .small()
+                                                        .ghost()
+                                                        .icon(IconName::Close)
+                                                        .on_click(window.listener_for(
+                                                            &view,
+                                                            move |this, _, _, cx| {
+                                                                this.config.remove_command_history(
+                                                                    &delete_command,
+                                                                );
+                                                                let _ = this.config.save();
+                                                                cx.notify();
+                                                            },
+                                                        )),
+                                                    )
+                                            },
+                                        ))
+                                        .when(entries_empty, |this| {
+                                            this.child(
+                                                div()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("no_command_history").to_string()),
+                                            )
+                                        }),
+                                ),
+                        )
+                    }
+                })
+        });
+        window.defer(cx, move |window, cx| {
+            window.focus(&focus_search_input.read(cx).focus_handle(cx), cx);
+        });
+    }
+
+    pub(crate) fn show_quick_commands_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_dialog.is_some() {
+            return;
+        }
+        self.active_dialog = Some(crate::app::DialogKind::QuickCommands);
+        Self::set_input_value(&self.quick_command_search_input, "", window, cx);
+        Self::set_input_value(&self.quick_command_name_input, "", window, cx);
+        Self::set_input_value(&self.quick_command_value_input, "", window, cx);
+
+        let view = cx.entity();
+        let search_input = self.quick_command_search_input.clone();
+        let name_input = self.quick_command_name_input.clone();
+        let command_input = self.quick_command_value_input.clone();
+        let focus_search_input = search_input.clone();
+        window.open_dialog(cx, move |dialog: Dialog, _window, _cx| {
+            dialog
+                .title(t!("quick_commands").to_string())
+                .w(px(660.))
+                .overlay_closable(true)
+                .on_close({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        view.update(cx, |this, cx| {
+                            this.active_dialog = None;
+                            cx.notify();
+                        });
+                    }
+                })
+                .content({
+                    let view = view.clone();
+                    let search_input = search_input.clone();
+                    let name_input = name_input.clone();
+                    let command_input = command_input.clone();
+                    move |content, window, cx| {
+                        let query = search_input.read(cx).value().trim().to_ascii_lowercase();
+                        let mut commands = view.read(cx).config.quick_commands().to_vec();
+                        if !query.is_empty() {
+                            commands.retain(|command| {
+                                command.name.to_ascii_lowercase().contains(&query)
+                                    || command.command.to_ascii_lowercase().contains(&query)
+                            });
+                        }
+                        let commands_empty = commands.is_empty();
+                        content.child(
+                            v_flex()
+                                .gap_3()
+                                .child(Input::new(&search_input).tab_index(0))
+                                .child(
+                                    v_flex()
+                                        .max_h(px(320.))
+                                        .overflow_y_scrollbar()
+                                        .gap_2()
+                                        .children(commands.into_iter().map(|quick| {
+                                            let run_command = quick.command.clone();
+                                            let delete_id = quick.id.clone();
+                                            h_flex()
+                                                .gap_2()
+                                                .child(
+                                                    Button::new(SharedString::from(format!(
+                                                        "quick-run-{}",
+                                                        quick.id
+                                                    )))
+                                                    .ghost()
+                                                    .flex_1()
+                                                    .justify_start()
+                                                    .label(format!(
+                                                        "{}  {}",
+                                                        quick.name, quick.command
+                                                    ))
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        move |this, _, window, cx| {
+                                                            this.active_dialog = None;
+                                                            this.run_terminal_command(
+                                                                &run_command,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                            window.close_dialog(cx);
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                                )
+                                                .child(
+                                                    Button::new(SharedString::from(format!(
+                                                        "quick-delete-{}",
+                                                        delete_id
+                                                    )))
+                                                    .small()
+                                                    .ghost()
+                                                    .icon(IconName::Close)
+                                                    .on_click(window.listener_for(
+                                                        &view,
+                                                        move |this, _, _, cx| {
+                                                            this.config
+                                                                .remove_quick_command(&delete_id);
+                                                            let _ = this.config.save();
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                                )
+                                        }))
+                                        .when(commands_empty, |this| {
+                                            this.child(
+                                                div()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t!("no_quick_commands").to_string()),
+                                            )
+                                        }),
+                                )
+                                .child(div().h(px(1.)).bg(cx.theme().border))
+                                .child(Input::new(&name_input).tab_index(1))
+                                .child(Input::new(&command_input).tab_index(2))
+                                .child(
+                                    h_flex().justify_end().child(
+                                        Button::new("quick-command-save")
+                                            .primary()
+                                            .label(t!("save").to_string())
+                                            .on_click(window.listener_for(
+                                                &view,
+                                                move |this, _, window, cx| {
+                                                    let name = this
+                                                        .quick_command_name_input
+                                                        .read(cx)
+                                                        .value()
+                                                        .to_string();
+                                                    let command = this
+                                                        .quick_command_value_input
+                                                        .read(cx)
+                                                        .value()
+                                                        .to_string();
+                                                    this.config
+                                                        .upsert_quick_command(None, name, command);
+                                                    let _ = this.config.save();
+                                                    Self::set_input_value(
+                                                        &this.quick_command_name_input,
+                                                        "",
+                                                        window,
+                                                        cx,
+                                                    );
+                                                    Self::set_input_value(
+                                                        &this.quick_command_value_input,
+                                                        "",
+                                                        window,
+                                                        cx,
+                                                    );
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    ),
+                                ),
+                        )
+                    }
+                })
+        });
+        window.defer(cx, move |window, cx| {
+            window.focus(&focus_search_input.read(cx).focus_handle(cx), cx);
+        });
+    }
+
     pub(crate) fn show_selector_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_dialog.is_some() {
             return;
@@ -1798,25 +2045,6 @@ impl Ashell {
                                                             }
                                                         })
                                                     )
-                                                )
-                                                .item(
-                                                    SettingItem::new(
-                                                        t!("lock_layout").to_string(),
-                                                        SettingField::render({
-                                                            let view = view_clone_for_general.clone();
-                                                            move |_, window, cx| {
-                                                                Switch::new("lock-layout")
-                                                                    .small()
-                                                                    .checked(view.read(cx).config.lock_layout())
-                                                                    .on_click(window.listener_for(&view, |this, checked, _, cx| {
-                                                                        this.config.set_lock_layout(*checked);
-                                                                        let _ = this.config.save();
-                                                                        cx.notify();
-                                                                    }))
-                                                                    .into_any_element()
-                                                            }
-                                                        })
-                                                    ).description(t!("lock_layout_hint").to_string())
                                                 )
                                                 .item(
                                                     SettingItem::new(

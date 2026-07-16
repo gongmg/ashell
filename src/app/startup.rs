@@ -4,7 +4,7 @@ use gpui_component::Root;
 use crate::Ashell;
 use crate::session::config::ConfigStore;
 
-pub(crate) fn bind_workspace_keys(cx: &mut gpui::App) {
+pub fn bind_workspace_keys(cx: &mut gpui::App) {
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
     crate::app::keybinding_recorder::bind_workspace_keys_from_config(cx, &config);
 }
@@ -81,7 +81,7 @@ impl std::io::Write for LocalMinutelyRoller {
     }
 }
 
-pub(crate) fn init_logging() {
+pub fn init_logging() {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
     let log_dir = directories::BaseDirs::new()
@@ -122,8 +122,48 @@ pub(crate) fn init_logging() {
         .init();
 }
 
+pub fn init_panic_logging() {
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let log_dir = directories::BaseDirs::new()
+            .map(|dirs| dirs.home_dir().join(".config").join("ashell").join("log"))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let _ = std::fs::create_dir_all(&log_dir);
+        let filename = format!(
+            "panic-{}.log",
+            chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+        );
+        let path = log_dir.join(filename);
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("unnamed");
+        let message = if let Some(message) = info.payload().downcast_ref::<&str>() {
+            *message
+        } else if let Some(message) = info.payload().downcast_ref::<String>() {
+            message.as_str()
+        } else {
+            "non-string panic payload"
+        };
+        let location = info
+            .location()
+            .map(|location| {
+                format!(
+                    "{}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let body = format!(
+            "panic at {location}\nthread: {thread_name}\nmessage: {message}\n\n{backtrace}\n"
+        );
+        let _ = std::fs::write(&path, body.as_bytes());
+        tracing::error!("panic captured at {}: {}", location, message);
+    }));
+}
+
 #[cfg(target_os = "macos")]
-pub(crate) fn sync_macos_launch_environment() {
+pub fn sync_macos_launch_environment() {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let Ok(output) = std::process::Command::new(&shell)
         .args(["-l", "-c", "env -0"])
@@ -211,9 +251,9 @@ fn read_proxy_from_env() -> Option<(String, String, Option<u16>, String, String)
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn sync_macos_launch_environment() {}
+pub fn sync_macos_launch_environment() {}
 
-pub(crate) fn open_main_window(cx: &mut App) {
+pub fn open_main_window(cx: &mut App) {
     let config = ConfigStore::load().unwrap_or_else(|_| ConfigStore::in_memory());
 
     let _ = crate::session::config::ENV_PROXY.get_or_init(|| {

@@ -19,6 +19,8 @@ gpui::actions!(
         OpenTransfers,
         NewSsh,
         OpenSearch,
+        OpenCommandHistory,
+        OpenQuickCommands,
         ToggleSidebar,
         ToggleSftpZoom,
         FocusPaneLeft,
@@ -69,6 +71,16 @@ pub(crate) const WORKSPACE_ACTIONS: &[WorkspaceAction] = &[
         id: "OpenSearch",
         label_key: "settings_open_search",
         default_suffix: "f",
+    },
+    WorkspaceAction {
+        id: "OpenCommandHistory",
+        label_key: "settings_open_command_history",
+        default_suffix: "alt-h",
+    },
+    WorkspaceAction {
+        id: "OpenQuickCommands",
+        label_key: "settings_open_quick_commands",
+        default_suffix: "alt-r",
     },
     WorkspaceAction {
         id: "ToggleSidebar",
@@ -154,6 +166,10 @@ pub(crate) fn default_modifier() -> &'static str {
 }
 
 pub(crate) fn default_keystroke(action_id: &str) -> Option<String> {
+    if action_id == "Paste" && !cfg!(target_os = "macos") {
+        return Some("shift-insert".to_string());
+    }
+
     WORKSPACE_ACTIONS
         .iter()
         .find(|action| action.id == action_id)
@@ -233,6 +249,8 @@ pub(crate) fn unbind_all_workspace_keys(cx: &mut App, config: &ConfigStore) {
     unbind_action!("OpenTransfers", crate::OpenTransfers);
     unbind_action!("NewSsh", crate::NewSsh);
     unbind_action!("OpenSearch", crate::OpenSearch);
+    unbind_action!("OpenCommandHistory", crate::OpenCommandHistory);
+    unbind_action!("OpenQuickCommands", crate::OpenQuickCommands);
     unbind_action!("ToggleSidebar", crate::ToggleSidebar);
     unbind_action!("ToggleSftpZoom", crate::ToggleSftpZoom);
     unbind_action!("FocusPaneLeft", crate::FocusPaneLeft);
@@ -291,6 +309,8 @@ fn bind_workspace_actions(cx: &mut App, config: &ConfigStore) {
     bind_action!("OpenTransfers", crate::OpenTransfers);
     bind_action!("NewSsh", crate::NewSsh);
     bind_action!("OpenSearch", crate::OpenSearch);
+    bind_action!("OpenCommandHistory", crate::OpenCommandHistory);
+    bind_action!("OpenQuickCommands", crate::OpenQuickCommands);
     bind_action!("ToggleSidebar", crate::ToggleSidebar);
     bind_action!("ToggleSftpZoom", crate::ToggleSftpZoom);
     bind_action!("FocusPaneLeft", crate::FocusPaneLeft);
@@ -319,6 +339,8 @@ impl KeybindingsPage {
                     "OpenTransfers",
                     "NewSsh",
                     "OpenSearch",
+                    "OpenCommandHistory",
+                    "OpenQuickCommands",
                     "Copy",
                     "Paste",
                 ],

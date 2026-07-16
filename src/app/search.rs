@@ -113,14 +113,14 @@ impl Ashell {
         let mut matches: Vec<(i32, i32)> = Vec::new();
 
         for (row_idx, row) in all_rows.iter().enumerate() {
-            if row.is_empty() {
+            if row.cells.is_empty() {
                 continue;
             }
 
             // Build text string and byte→column index mapping.
-            let mut text = String::with_capacity(row.len());
+            let mut text = String::with_capacity(row.cells.len());
             let mut byte_to_col: Vec<i32> = Vec::new();
-            for &(col, c) in row {
+            for &(col, c) in &row.cells {
                 text.push(c);
                 while byte_to_col.len() < text.len() {
                     byte_to_col.push(col);
@@ -215,7 +215,7 @@ impl Ashell {
         };
 
         if let Some(tab) = tab {
-            let snapshot = tab.render_snapshot(false);
+            let snapshot = tab.render_snapshot();
             let display_offset = snapshot.display_offset as i32;
             let rows = snapshot.rows as i32;
 
@@ -275,7 +275,7 @@ impl Ashell {
         let Some(tab) = tab else {
             return None;
         };
-        let snapshot = tab.render_snapshot(false);
+        let snapshot = tab.render_snapshot();
         let display_offset = snapshot.display_offset as i32;
         let rows = snapshot.rows as i32;
 

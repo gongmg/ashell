@@ -4,7 +4,8 @@ use alacritty_terminal::index::Side;
 use alacritty_terminal::selection::SelectionType;
 use gpui::{
     ClipboardItem, Context, Focusable as _, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, Window, px,
+    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, ScrollDelta, ScrollWheelEvent,
+    Window, px,
 };
 
 use crate::{
@@ -17,13 +18,157 @@ thread_local! {
 }
 
 impl Ashell {
+    fn remember_terminal_input(&mut self, tab_id: &str, tab_ix: usize, bytes: &[u8]) {
+        let cursor_before_input = self.tabs[tab_ix].render_snapshot().cursor;
+        let mut completed_commands = Vec::new();
+        let mut pending_completed_commands = Vec::new();
+        let state = self.command_buffers.entry(tab_id.to_string()).or_default();
+
+        for &byte in bytes {
+            match byte {
+                b'\r' | b'\n' => {
+                    pending_completed_commands.push((
+                        state.start_row,
+                        state.start_col,
+                        state.typed.clone(),
+                    ));
+                    *state = Default::default();
+                }
+                0x08 | 0x7f => {
+                    state.typed.pop();
+                }
+                byte if byte.is_ascii_graphic() || byte == b' ' => {
+                    if state.start_row.is_none() || state.start_col.is_none() {
+                        if let Some(cursor) = cursor_before_input {
+                            state.start_row = Some(cursor.row);
+                            state.start_col = Some(cursor.col);
+                        }
+                    }
+                    state.typed.push(byte as char);
+                }
+                _ => {}
+            }
+        }
+
+        for (row, col, typed) in pending_completed_commands {
+            let visible_command = row
+                .zip(col)
+                .and_then(|(row, col)| self.tabs[tab_ix].visible_line_text_from(row, col));
+            let command = choose_completed_command(visible_command, typed);
+            if !command.is_empty() {
+                completed_commands.push(command);
+            }
+        }
+
+        let had_completed_commands = !completed_commands.is_empty();
+        for command in completed_commands {
+            self.config.record_command(command);
+        }
+        if !bytes.is_empty() && had_completed_commands {
+            let _ = self.config.save();
+        }
+    }
+
+    pub(crate) fn run_terminal_command(
+        &mut self,
+        command: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let command = command.trim();
+        if command.is_empty() {
+            return;
+        }
+        let mut bytes = command.as_bytes().to_vec();
+        bytes.push(b'\r');
+        self.send_terminal_input(bytes, window, cx);
+    }
+
+    pub(crate) fn clear_terminal_buffer(&mut self, cx: &mut Context<Self>) {
+        let Some(active_id) = self.active_tab.clone() else {
+            return;
+        };
+        let Some(tab_ix) = self.tabs.iter().position(|tab| tab.id == active_id) else {
+            return;
+        };
+
+        self.tabs[tab_ix].clear_selection();
+        self.tabs[tab_ix].scroll_to_bottom();
+        let preserved_line = self.tabs[tab_ix].current_or_last_visible_line_text();
+        let bottom_row = self.tabs[tab_ix].rows.max(1);
+        self.tabs[tab_ix].feed(b"\x1b[2J\x1b[3J");
+        if let Some(preserved_line) = preserved_line {
+            let restore = format!("\x1b[{bottom_row};1H{preserved_line}");
+            self.tabs[tab_ix].feed(restore.as_bytes());
+        }
+        self.command_buffers.remove(&active_id);
+        self.status = "terminal buffer cleared".into();
+        cx.notify();
+    }
+
+    pub(crate) fn download_terminal_buffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active_id) = self.active_tab.clone() else {
+            return;
+        };
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == active_id) else {
+            return;
+        };
+
+        let content = terminal_buffer_text(tab);
+        let title = sanitize_filename(&tab.title);
+        let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let suggested_name = format!("ashell-{title}-{timestamp}.txt");
+        let path_prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(suggested_name.into()),
+        });
+
+        cx.spawn_in(window, async move |this, cx| {
+            match path_prompt.await {
+                Ok(Ok(Some(mut paths))) => {
+                    if let Some(mut path) = paths.pop() {
+                        if path.extension().is_none() {
+                            path.set_extension("txt");
+                        }
+                        match std::fs::write(&path, content.as_bytes()) {
+                            Ok(()) => {
+                                this.update(cx, |this, cx| {
+                                    this.status =
+                                        format!("terminal buffer saved: {}", path.display()).into();
+                                    cx.notify();
+                                })?;
+                            }
+                            Err(err) => {
+                                this.update(cx, |this, cx| {
+                                    this.status =
+                                        format!("save terminal buffer failed: {err}").into();
+                                    cx.notify();
+                                })?;
+                            }
+                        }
+                    }
+                }
+                Ok(Err(err)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = format!("save picker failed: {err}").into();
+                        cx.notify();
+                    })?;
+                }
+                _ => {}
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
     pub(crate) fn on_terminal_key_down(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.cmd_ctrl_pressed = event.keystroke.modifiers.platform;
         // If the search input is focused, skip terminal key processing
         // so the input can handle text entry, paste, etc. normally.
         if self
@@ -104,7 +249,12 @@ impl Ashell {
                 return;
             }
         }
-        if event.keystroke.modifiers.secondary() && event.keystroke.key.eq_ignore_ascii_case("v") {
+        if event.keystroke.modifiers.shift
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.platform
+            && event.keystroke.key.eq_ignore_ascii_case("insert")
+        {
             if let Some(clipboard) = cx.read_from_clipboard() {
                 if let Some(text) = clipboard.text() {
                     self.paste_into_terminal(&text, window, cx);
@@ -146,36 +296,76 @@ impl Ashell {
         }
 
         if event.prefer_character_input {
-            if let Some(text) = event.keystroke.key_char.as_deref() {
-                if !text.is_empty()
-                    && !event.keystroke.modifiers.control
-                    && !event.keystroke.modifiers.function
-                    && !event.keystroke.modifiers.platform
-                {
-                    self.send_terminal_input(text.as_bytes().to_vec(), window, cx);
-                }
+            if let Some(text) = event.keystroke.key_char.as_deref()
+                && !text.is_empty()
+                && !event.keystroke.modifiers.function
+                && !event.keystroke.modifiers.platform
+                && !text.is_ascii()
+            {
+                self.send_terminal_input(text.as_bytes().to_vec(), window, cx);
+                return;
             }
+
+            window.prevent_default();
+            cx.stop_propagation();
             return;
         }
 
         let Some(active_id) = self.active_tab.clone() else {
             return;
         };
-        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == active_id) else {
+        let Some(tab_ix) = self.tabs.iter().position(|t| t.id == active_id) else {
             return;
         };
 
-        if tab.render_snapshot(false).display_offset > 0 {
-            tab.scroll_to_bottom();
+        if self.handle_terminal_history_key(tab_ix, &event.keystroke.key, event, window, cx) {
+            return;
         }
-        tab.clear_selection();
 
-        if let Some(bytes) = encode_key(&event.keystroke, tab.app_cursor_mode(), false) {
-            tab.send_backend(BackendCommand::Input(bytes));
+        if self.tabs[tab_ix].render_snapshot().display_offset > 0 {
+            self.tabs[tab_ix].scroll_to_bottom();
+        }
+        self.tabs[tab_ix].clear_selection();
+
+        if let Some(bytes) =
+            encode_key(&event.keystroke, self.tabs[tab_ix].app_cursor_mode(), false)
+        {
+            self.remember_terminal_input(&active_id, tab_ix, &bytes);
+            self.tabs[tab_ix].send_backend(BackendCommand::Input(bytes));
             window.prevent_default();
             cx.stop_propagation();
             cx.notify();
         }
+    }
+
+    fn handle_terminal_history_key(
+        &mut self,
+        tab_ix: usize,
+        key: &str,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !event.keystroke.modifiers.shift
+            || event.keystroke.modifiers.control
+            || event.keystroke.modifiers.alt
+            || event.keystroke.modifiers.platform
+        {
+            return false;
+        }
+
+        match key.to_ascii_lowercase().as_str() {
+            "pageup" => self.tabs[tab_ix].scroll_page_up(),
+            "pagedown" => self.tabs[tab_ix].scroll_page_down(),
+            "home" => self.tabs[tab_ix].scroll_to_top(),
+            "end" => self.tabs[tab_ix].scroll_to_bottom(),
+            _ => return false,
+        }
+
+        window.prevent_default();
+        cx.stop_propagation();
+        cx.notify();
+        true
     }
 
     pub(crate) fn on_terminal_tab_action(
@@ -200,16 +390,17 @@ impl Ashell {
         let Some(active_id) = self.active_tab.clone() else {
             return;
         };
-        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == active_id) else {
+        let Some(tab_ix) = self.tabs.iter().position(|t| t.id == active_id) else {
             return;
         };
 
-        if tab.render_snapshot(false).display_offset > 0 {
-            tab.scroll_to_bottom();
+        if self.tabs[tab_ix].render_snapshot().display_offset > 0 {
+            self.tabs[tab_ix].scroll_to_bottom();
         }
 
-        tab.clear_selection();
-        tab.send_backend(BackendCommand::Input(bytes));
+        self.tabs[tab_ix].clear_selection();
+        self.remember_terminal_input(&active_id, tab_ix, &bytes);
+        self.tabs[tab_ix].send_backend(BackendCommand::Input(bytes));
         window.prevent_default();
         cx.stop_propagation();
         cx.notify();
@@ -232,15 +423,16 @@ impl Ashell {
         let Some(active_id) = self.active_tab.clone() else {
             return;
         };
-        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) else {
+        let Some(tab_ix) = self.tabs.iter().position(|tab| tab.id == active_id) else {
             return;
         };
 
-        if tab.render_snapshot(false).display_offset > 0 {
-            tab.scroll_to_bottom();
+        if self.tabs[tab_ix].render_snapshot().display_offset > 0 {
+            self.tabs[tab_ix].scroll_to_bottom();
         }
-        tab.clear_selection();
-        tab.paste_text(text);
+        self.tabs[tab_ix].clear_selection();
+        self.remember_terminal_input(&active_id, tab_ix, text.as_bytes());
+        self.tabs[tab_ix].paste_text(text);
         window.prevent_default();
         cx.stop_propagation();
         cx.notify();
@@ -287,16 +479,17 @@ impl Ashell {
         let Some(active_id) = self.active_tab.clone() else {
             return;
         };
-        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) else {
+        let Some(tab_ix) = self.tabs.iter().position(|tab| tab.id == active_id) else {
             return;
         };
 
-        if tab.render_snapshot(false).display_offset > 0 {
-            tab.scroll_to_bottom();
+        if self.tabs[tab_ix].render_snapshot().display_offset > 0 {
+            self.tabs[tab_ix].scroll_to_bottom();
         }
-        tab.clear_selection();
+        self.tabs[tab_ix].clear_selection();
         self.terminal_marked_text = None;
-        tab.send_backend(BackendCommand::Input(text.as_bytes().to_vec()));
+        self.remember_terminal_input(&active_id, tab_ix, text.as_bytes());
+        self.tabs[tab_ix].send_backend(BackendCommand::Input(text.as_bytes().to_vec()));
         window.invalidate_character_coordinates();
         cx.notify();
     }
@@ -380,35 +573,6 @@ impl Ashell {
             }
             return;
         }
-
-        // Track URL hover
-        let mut hovered_url = None;
-        let cmd_ctrl_pressed = event.modifiers.platform;
-        if let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position) {
-            if let Some(snapshot) = self.active_snapshot() {
-                if let Some(active_id) = &self.active_tab {
-                    if let Some((url, url_cells)) = crate::terminal::highlight::find_url_at_cell(
-                        &snapshot.cells,
-                        snapshot.rows,
-                        row,
-                        col,
-                    ) {
-                        hovered_url = Some(crate::app::HoveredUrl {
-                            url,
-                            tab_id: active_id.clone(),
-                            cells: url_cells,
-                        });
-                    }
-                }
-            }
-        }
-
-        if self.hovered_url != hovered_url || self.cmd_ctrl_pressed != cmd_ctrl_pressed {
-            self.hovered_url = hovered_url;
-            self.cmd_ctrl_pressed = cmd_ctrl_pressed;
-            cx.notify();
-        }
-
         if !self.terminal_selecting || event.pressed_button != Some(MouseButton::Left) {
             return;
         }
@@ -484,7 +648,7 @@ impl Ashell {
         cx.notify();
     }
 
-    pub(crate) fn terminal_grid_point_and_side(
+    fn terminal_grid_point_and_side(
         &self,
         position: Point<Pixels>,
     ) -> Option<(usize, usize, Side)> {
@@ -627,5 +791,69 @@ impl Ashell {
             cx.stop_propagation();
             cx.notify();
         }
+    }
+}
+
+fn terminal_buffer_text(tab: &crate::terminal::TerminalTab) -> String {
+    let (_grid_start, rows) = tab.full_grid_rows();
+    let mut output = String::new();
+
+    for row in rows {
+        let Some(max_col) = row.cells.iter().map(|(col, _)| *col).max() else {
+            output.push('\n');
+            continue;
+        };
+        let mut chars = vec![' '; max_col.saturating_add(1) as usize];
+        for (col, ch) in row.cells {
+            if col >= 0 {
+                let col = col as usize;
+                if col < chars.len() {
+                    chars[col] = ch;
+                }
+            }
+        }
+        let line = chars.into_iter().collect::<String>();
+        output.push_str(&line);
+        if !row.wrapped {
+            output.push('\n');
+        }
+    }
+    output
+}
+
+fn sanitize_filename(value: &str) -> String {
+    let mut sanitized = value
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
+            ch if ch.is_control() => '-',
+            ch => ch,
+        })
+        .collect::<String>();
+    sanitized = sanitized.trim_matches([' ', '.']).to_string();
+    if sanitized.is_empty() {
+        "terminal".into()
+    } else {
+        sanitized.chars().take(80).collect()
+    }
+}
+
+fn choose_completed_command(visible_command: Option<String>, typed: String) -> String {
+    let typed = typed.trim().to_string();
+    let Some(visible) = visible_command.map(|command| command.trim().to_string()) else {
+        return typed;
+    };
+
+    if visible.is_empty() {
+        return typed;
+    }
+    if typed.is_empty() {
+        return visible;
+    }
+
+    if visible.len() >= typed.len() {
+        visible
+    } else {
+        typed
     }
 }

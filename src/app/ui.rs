@@ -1,7 +1,6 @@
-use crate::app::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::{
-    Context, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Render,
+    AnyElement, Context, ElementId, Focusable as _, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, PathBuilder, Pixels, Render,
     StatefulInteractiveElement as _, Styled as _, Window, canvas, div, hsla, point,
     prelude::FluentBuilder as _, px, relative, rems, uniform_list,
 };
@@ -14,6 +13,7 @@ use gpui_component::{
     input::Input,
     menu::{ContextMenuExt as _, PopupMenuItem},
     progress::Progress,
+    resizable::{h_resizable, resizable_panel, v_resizable},
     scroll::{ScrollableElement as _, Scrollbar, ScrollbarShow},
     tab::{Tab, TabBar},
     v_flex,
@@ -23,11 +23,60 @@ use rust_i18n::t;
 use crate::{
     Ashell, PaneLayout,
     app::constants::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH, TERMINAL_KEY_CONTEXT},
+    session::config::Session,
     sftp::format_mtime,
     sftp::ops::is_editable_text_file,
     system::format_bytes,
-    terminal::{self, TabKind},
+    terminal::{self, TabKind, TerminalTab},
 };
+
+fn session_matches_filter(session: &Session, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let query = query.to_ascii_lowercase();
+    session.name.to_ascii_lowercase().contains(&query)
+        || session.group.to_ascii_lowercase().contains(&query)
+        || session.host.to_ascii_lowercase().contains(&query)
+        || session.user.to_ascii_lowercase().contains(&query)
+}
+
+enum SidebarSessionRow {
+    Group(String),
+    Session(Session),
+}
+
+fn grouped_session_rows(mut sessions: Vec<Session>) -> Vec<SidebarSessionRow> {
+    sessions.sort_by(|a, b| {
+        let group_cmp = normalized_session_group(a).cmp(&normalized_session_group(b));
+        group_cmp.then_with(|| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        })
+    });
+
+    let mut rows = Vec::new();
+    let mut current_group = None::<String>;
+    for session in sessions {
+        let group = normalized_session_group(&session);
+        if current_group.as_deref() != Some(group.as_str()) {
+            current_group = Some(group.clone());
+            rows.push(SidebarSessionRow::Group(group));
+        }
+        rows.push(SidebarSessionRow::Session(session));
+    }
+    rows
+}
+
+fn normalized_session_group(session: &Session) -> String {
+    let group = session.group.trim();
+    if group.is_empty() {
+        t!("ungrouped").to_string()
+    } else {
+        group.to_string()
+    }
+}
 
 impl Ashell {
     fn render_home_page(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -197,17 +246,6 @@ impl Ashell {
             .when_some(active_sftp.clone(), |this, sftp| {
                 let selected_entries = sftp.selected_entries.clone();
                 this.child(
-                    Button::new("sftp-sync-cwd")
-                        .ghost()
-                        .small()
-                        .icon(IconName::SquareTerminal)
-                        .label(t!("sync_cwd").to_string())
-                        .tooltip(t!("sync_cwd_tooltip").to_string())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.sync_cwd_from_terminal(window, cx);
-                        })),
-                )
-                .child(
                     Button::new("sftp-refresh")
                         .ghost()
                         .small()
@@ -445,11 +483,27 @@ impl Ashell {
         };
 
         let selected_path = sftp.selected_path.clone();
+        let file_filter = self
+            .sftp_filter_input
+            .read(cx)
+            .text()
+            .to_string()
+            .trim()
+            .to_ascii_lowercase();
         let entries = sftp
             .entries
             .clone()
             .into_iter()
             .filter(|entry| self.show_hidden_files || !entry.name.starts_with('.'))
+            .filter(|entry| {
+                file_filter.is_empty()
+                    || entry.name.to_ascii_lowercase().contains(&file_filter)
+                    || entry.full_path.to_ascii_lowercase().contains(&file_filter)
+            })
+            .collect::<Vec<_>>();
+        let visible_entry_paths = entries
+            .iter()
+            .map(|entry| entry.full_path.clone())
             .collect::<Vec<_>>();
         let status = sftp.status.clone();
         let selected_entries = sftp.selected_entries.clone();
@@ -508,6 +562,17 @@ impl Ashell {
                 )
                 .child(
                     h_flex()
+                        .h(px(34.))
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().muted.opacity(0.92))
+                        .child(Input::new(&self.sftp_filter_input).flex_1().tab_index(0)),
+                )
+                .child(
+                    h_flex()
                         .h(px(26.))
                         .px_3()
                         .items_center()
@@ -525,7 +590,11 @@ impl Ashell {
                                     Checkbox::new("sftp-select-all")
                                         .checked(all_selected)
                                         .on_click(cx.listener(move |this, checked, _, cx| {
-                                            this.toggle_all_sftp_entries(*checked, cx);
+                                            this.toggle_sftp_entries(
+                                                visible_entry_paths.clone(),
+                                                *checked,
+                                                cx,
+                                            );
                                         })),
                                 ),
                         )
@@ -1556,7 +1625,20 @@ impl Ashell {
     }
 
     fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let sessions = self.config.sessions().to_vec();
+        let session_filter = self
+            .session_filter_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let sessions = self
+            .config
+            .sessions()
+            .iter()
+            .filter(|session| session_matches_filter(session, &session_filter))
+            .cloned()
+            .collect::<Vec<_>>();
+        let session_rows = grouped_session_rows(sessions);
         let active_session_id = self.active_session_id().map(ToOwned::to_owned);
 
         v_flex()
@@ -1652,6 +1734,7 @@ impl Ashell {
                             .text_color(cx.theme().primary)
                             .child(t!("saved")),
                     )
+                    .child(Input::new(&self.session_filter_input).w_full())
                     .child(
                         div()
                             .relative()
@@ -1665,112 +1748,128 @@ impl Ashell {
                                     .track_scroll(&self.saved_scroll_handle)
                                     .overflow_y_scroll()
                                     .gap_2()
-                                    .children(sessions.into_iter().enumerate().map(
-                                        |(ix, session)| {
-                                            let connect_id = session.id.clone();
-                                            let edit_id = session.id.clone();
-                                            let delete_id = session.id.clone();
-                                            let is_active = active_session_id.as_deref()
-                                                == Some(session.id.as_str());
-                                            let name = session.name.clone();
-                                            let detail = self.session_detail(&session);
-                                            div()
-                                                .id(("saved-connect", ix))
-                                                .w_full()
-                                                .p_2()
-                                                .rounded_md()
-                                                .border_1()
-                                                .border_color(if is_active {
-                                                    cx.theme().primary
-                                                } else {
-                                                    cx.theme().border
-                                                })
-                                                .bg(if is_active {
-                                                    cx.theme().tab_active
-                                                } else {
-                                                    cx.theme().muted
-                                                })
-                                                .cursor_pointer()
-                                                .hover(|this| this.bg(cx.theme().secondary))
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener(move |this, _, _, cx| {
-                                                        this.connect_saved_session(
-                                                            connect_id.clone(),
-                                                            cx,
-                                                        )
-                                                    }),
-                                                )
-                                                .context_menu({
-                                                    let view = cx.entity();
-                                                    move |menu, window, _| {
-                                                        let edit_value = edit_id.clone();
-                                                        let clone_value = edit_id.clone();
-                                                        let delete_value = delete_id.clone();
-                                                        menu.item(
-                                                            PopupMenuItem::new(
-                                                                t!("clone").to_string(),
-                                                            )
-                                                            .on_click(window.listener_for(
-                                                                &view,
-                                                                move |this, _, window, cx| {
-                                                                    this.clone_saved_session(
-                                                                        clone_value.clone(),
-                                                                        window,
-                                                                        cx,
-                                                                    )
-                                                                },
-                                                            )),
-                                                        )
-                                                        .item(
-                                                            PopupMenuItem::new(
-                                                                t!("edit").to_string(),
-                                                            )
-                                                            .on_click(window.listener_for(
-                                                                &view,
-                                                                move |this, _, window, cx| {
-                                                                    this.edit_saved_session(
-                                                                        edit_value.clone(),
-                                                                        window,
-                                                                        cx,
-                                                                    )
-                                                                },
-                                                            )),
-                                                        )
-                                                        .item(
-                                                            PopupMenuItem::new(
-                                                                t!("delete").to_string(),
-                                                            )
-                                                            .on_click(window.listener_for(
-                                                                &view,
-                                                                move |this, _, _, cx| {
-                                                                    this.remove_saved_session(
-                                                                        delete_value.clone(),
-                                                                        cx,
-                                                                    )
-                                                                },
-                                                            )),
-                                                        )
-                                                    }
-                                                })
-                                                .child(
-                                                    v_flex()
-                                                        .gap_1()
-                                                        .child(
-                                                            div()
-                                                                .text_size(rems(1.0))
-                                                                .font_weight(FontWeight::SEMIBOLD)
-                                                                .child(name),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .text_size(rems(0.917))
-                                                                .text_color(
-                                                                    cx.theme().muted_foreground,
+                                    .children(session_rows.into_iter().enumerate().map(
+                                        |(ix, row)| -> AnyElement {
+                                            match row {
+                                                SidebarSessionRow::Group(group) => div()
+                                                    .pt_2()
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(group)
+                                                    .into_any_element(),
+                                                SidebarSessionRow::Session(session) => {
+                                                    let connect_id = session.id.clone();
+                                                    let edit_id = session.id.clone();
+                                                    let delete_id = session.id.clone();
+                                                    let is_active = active_session_id.as_deref()
+                                                        == Some(session.id.as_str());
+                                                    let name = session.name.clone();
+                                                    let detail = self.session_detail(&session);
+                                                    div()
+                                                        .id(("saved-connect", ix))
+                                                        .w_full()
+                                                        .p_2()
+                                                        .rounded_md()
+                                                        .border_1()
+                                                        .border_color(if is_active {
+                                                            cx.theme().primary
+                                                        } else {
+                                                            cx.theme().border
+                                                        })
+                                                        .bg(if is_active {
+                                                            cx.theme().tab_active
+                                                        } else {
+                                                            cx.theme().muted
+                                                        })
+                                                        .cursor_pointer()
+                                                        .hover(|this| this.bg(cx.theme().secondary))
+                                                        .on_mouse_down(
+                                                            MouseButton::Left,
+                                                            cx.listener(move |this, _, _, cx| {
+                                                                this.connect_saved_session(
+                                                                    connect_id.clone(),
+                                                                    cx,
                                                                 )
-                                                                .child(detail),
-                                                        ),
-                                                )
+                                                            }),
+                                                        )
+                                                        .context_menu({
+                                                            let view = cx.entity();
+                                                            move |menu, window, _| {
+                                                                let edit_value = edit_id.clone();
+                                                                let clone_value = edit_id.clone();
+                                                                let delete_value =
+                                                                    delete_id.clone();
+                                                                menu.item(
+                                                                    PopupMenuItem::new(
+                                                                        t!("clone").to_string(),
+                                                                    )
+                                                                    .on_click(window.listener_for(
+                                                                        &view,
+                                                                        move |this, _, window, cx| {
+                                                                            this.clone_saved_session(
+                                                                                clone_value.clone(),
+                                                                                window,
+                                                                                cx,
+                                                                            )
+                                                                        },
+                                                                    )),
+                                                                )
+                                                                .item(
+                                                                    PopupMenuItem::new(
+                                                                        t!("edit").to_string(),
+                                                                    )
+                                                                    .on_click(window.listener_for(
+                                                                        &view,
+                                                                        move |this, _, window, cx| {
+                                                                            this.edit_saved_session(
+                                                                                edit_value.clone(),
+                                                                                window,
+                                                                                cx,
+                                                                            )
+                                                                        },
+                                                                    )),
+                                                                )
+                                                                .item(
+                                                                    PopupMenuItem::new(
+                                                                        t!("delete").to_string(),
+                                                                    )
+                                                                    .on_click(window.listener_for(
+                                                                        &view,
+                                                                        move |this, _, _, cx| {
+                                                                            this.remove_saved_session(
+                                                                                delete_value.clone(),
+                                                                                cx,
+                                                                            )
+                                                                        },
+                                                                    )),
+                                                                )
+                                                            }
+                                                        })
+                                                        .child(
+                                                            v_flex()
+                                                                .gap_1()
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(rems(1.0))
+                                                                        .font_weight(
+                                                                            FontWeight::SEMIBOLD,
+                                                                        )
+                                                                        .child(name),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(rems(0.917))
+                                                                        .text_color(
+                                                                            cx.theme()
+                                                                                .muted_foreground,
+                                                                        )
+                                                                        .child(detail),
+                                                                ),
+                                                        )
+                                                        .into_any_element()
+                                                }
+                                            }
                                         },
                                     )),
                             )
@@ -2285,6 +2384,50 @@ impl Ashell {
                                 this.split_current_pane("right", cx);
                             })),
                     )
+                    .child(
+                        Button::new("open-command-history")
+                            .secondary()
+                            .small()
+                            .rounded(px(999.))
+                            .icon(IconName::BookOpen)
+                            .tooltip(t!("command_history").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_command_history_dialog(window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("open-quick-commands")
+                            .secondary()
+                            .small()
+                            .rounded(px(999.))
+                            .icon(IconName::Play)
+                            .tooltip(t!("quick_commands").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_quick_commands_dialog(window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("download-terminal-buffer")
+                            .secondary()
+                            .small()
+                            .rounded(px(999.))
+                            .icon(IconName::ArrowDown)
+                            .tooltip(t!("download_terminal_buffer").to_string())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.download_terminal_buffer(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("clear-terminal-buffer")
+                            .secondary()
+                            .small()
+                            .rounded(px(999.))
+                            .icon(IconName::Close)
+                            .tooltip(t!("clear_terminal_buffer").to_string())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.clear_terminal_buffer(cx);
+                            })),
+                    )
                     .child(self.render_search_button(cx)),
             )
     }
@@ -2305,11 +2448,8 @@ impl Ashell {
                 div()
                     .size_full()
                     .on_prepaint(move |bounds, _window, cx| {
-                        let _ = view.update(cx, |this, cx| {
-                            if this.terminal_panel_bounds != Some(bounds) {
-                                this.terminal_panel_bounds = Some(bounds);
-                                cx.notify();
-                            }
+                        let _ = view.update(cx, |this, _| {
+                            this.terminal_panel_bounds = Some(bounds);
                         });
                     })
                     .overflow_hidden()
@@ -2350,15 +2490,16 @@ impl Ashell {
                     return this.render_home_page(cx).into_any_element();
                 }
                 let is_focused = path == this.focused_pane_path.as_slice();
-                let keyword_highlight = this.config.keyword_highlight();
                 let snapshot = this
                     .tabs
                     .iter()
                     .find(|t| &t.id == tab_id)
-                    .map(|t| t.render_snapshot(keyword_highlight));
+                    .map(TerminalTab::render_snapshot);
                 let Some(snapshot) = snapshot else {
                     return div().into_any_element();
                 };
+                let view = cx.entity();
+                let tab_id_clone = tab_id.clone();
                 let tab_id_clone2 = tab_id.clone();
                 let focus_handle = this.focus_handle.clone();
                 let marked_text = if is_focused {
@@ -2370,14 +2511,14 @@ impl Ashell {
                 let font_size = px(this.terminal_font_size);
                 let line_height = px(this.terminal_line_height());
                 let cell_width = px(this.terminal_cell_width());
-                let is_url_hovered = this
-                    .hovered_url
-                    .as_ref()
-                    .map_or(false, |hu| hu.tab_id == *tab_id);
                 let mut el = div()
                     .size_full()
                     .overflow_hidden()
-                    .when(is_url_hovered, |d| d.cursor_pointer())
+                    .on_prepaint(move |bounds, _window, cx| {
+                        let _ = view.update(cx, |this, _| {
+                            this.terminal_bounds.insert(tab_id_clone.clone(), bounds);
+                        });
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -2394,7 +2535,6 @@ impl Ashell {
                         font_size,
                         line_height,
                         cell_width,
-                        tab_id.to_string(),
                         this.search_highlight_map(
                             tab_id,
                             cx.theme().danger.opacity(0.35),
@@ -2465,10 +2605,10 @@ impl Ashell {
                     el = el.opacity(0.85);
                 }
 
-                let mut wrapper = div().size_full();
                 if has_multiple_panes {
                     if is_focused {
-                        wrapper = wrapper
+                        el = div()
+                            .size_full()
                             .relative()
                             .child(
                                 div()
@@ -2509,13 +2649,11 @@ impl Ashell {
                             .p(px(4.))
                             .child(el);
                     } else {
-                        wrapper = wrapper.p(px(4.)).child(el);
+                        el = div().size_full().p(px(4.)).child(el);
                     }
-                } else {
-                    wrapper = wrapper.child(el);
                 }
 
-                wrapper.into_any_element()
+                el.into_any_element()
             }
             PaneLayout::Horizontal(children, ratio) => {
                 v_flex()
@@ -2630,7 +2768,7 @@ impl Render for Ashell {
             self.active_tab = self.tabs.first().map(|tab| tab.id.clone());
         }
         self.sync_sftp_path_input(window, cx);
-
+        self.sync_terminal_size(window, cx);
         if self.show_transfers_dialog {
             self.show_transfers_dialog = false;
             self.show_transfers_dialog(window, cx);
@@ -2639,7 +2777,7 @@ impl Render for Ashell {
             if let Some(scrollbar) = self.terminal_scrollbars.get(&active_id) {
                 if let Some(new_display_offset) = scrollbar.future_display_offset.take() {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
-                        let current = tab.render_snapshot(false).display_offset;
+                        let current = tab.render_snapshot().display_offset;
                         match new_display_offset.cmp(&current) {
                             std::cmp::Ordering::Greater => {
                                 tab.scroll_up_by(new_display_offset - current)
@@ -2682,7 +2820,6 @@ impl Render for Ashell {
         };
 
         let body_panel = v_resizable("ashell-body")
-            .lock(self.config.lock_layout())
             .with_state(&self.body_panels)
             .child(resizable_panel().child(self.render_terminal_panel(window, cx)))
             .child(
@@ -2769,7 +2906,6 @@ impl Render for Ashell {
             );
 
             h_resizable("ashell-workspace")
-                .lock(self.config.lock_layout())
                 .with_state(&self.workspace_panels)
                 .child(sidebar_area)
                 .child(main_area)
@@ -2787,6 +2923,8 @@ impl Render for Ashell {
             .on_action(cx.listener(|this, _: &crate::OpenTransfers, window, cx| this.show_transfers_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &crate::NewSsh, window, cx| this.show_ssh_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &crate::OpenSearch, window, cx| this.toggle_search(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::OpenCommandHistory, window, cx| this.show_command_history_dialog(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::OpenQuickCommands, window, cx| this.show_quick_commands_dialog(window, cx)))
             .on_action(cx.listener(|this, _: &crate::ToggleSidebar, _, cx| {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 this.config.set_sidebar_collapsed(this.sidebar_collapsed);
@@ -2845,42 +2983,18 @@ impl Render for Ashell {
                         .h(px(34.))
                         .w_full()
                         .bg(cx.theme().tab_bar)
+                        .on_double_click(|_, window, _| {
+                            #[cfg(target_os = "macos")]
+                            window.titlebar_double_click();
+                            #[cfg(not(target_os = "macos"))]
+                            window.zoom_window();
+                        })
                         .child(self.render_window_controls(window, cx))
                         .child(
                             div()
-                                .id("tab-bar-drag")
                                 .flex_1()
                                 .min_w(px(0.))
                                 .h_full()
-                                .on_double_click(|_, window, _| {
-                                    #[cfg(target_os = "macos")]
-                                    window.titlebar_double_click();
-                                    #[cfg(not(target_os = "macos"))]
-                                    window.zoom_window();
-                                })
-                                .when(cfg!(target_os = "linux"), |this| {
-                                    this.on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, _| {
-                                            this.should_move_window = true;
-                                        }),
-                                    )
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, _| {
-                                            this.should_move_window = false;
-                                        }),
-                                    )
-                                    .on_mouse_down_out(cx.listener(|this, _, _, _| {
-                                        this.should_move_window = false;
-                                    }))
-                                    .on_mouse_move(cx.listener(|this, _, window, _| {
-                                        if this.should_move_window {
-                                            this.should_move_window = false;
-                                            window.start_window_move();
-                                        }
-                                    }))
-                                })
                                 .child(self.render_tab_bar(cx)),
                         ),
                 )

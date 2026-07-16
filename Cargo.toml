@@ -1,6 +1,6 @@
 [package]
 name = "ashell"
-version = "0.4.11"
+version = "0.4.8"
 edition = "2024"
 authors = ["ashell contributors"]
 description = "A GPUI Component based SSH and local terminal client"
@@ -33,11 +33,12 @@ ssh-key = "0.6"
 sysinfo = "0.33"
 tar = "0.4"
 thiserror = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time", "time"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2"
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 futures = "0.3.32"
@@ -51,20 +52,9 @@ chacha20poly1305 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json", "cookies"] }
 sha2 = "0.10"
-
-[package.metadata.deb]
-maintainer = "ashell contributors"
-license-file = ["LICENSE"]
-extended-description = "A GPUI Component based SSH and local terminal client"
-section = "terminal"
-priority = "optional"
-assets = [
-    ["target/release/ashell", "usr/bin/", "755"],
-    ["assets/ashell.desktop", "usr/share/applications/", "644"],
-    ["assets/icons/ashell.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
-]
+urlencoding = "2.1"
 
 [profile.release]
 opt-level = 3

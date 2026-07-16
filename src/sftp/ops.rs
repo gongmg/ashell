@@ -1,10 +1,9 @@
-use gpui::{Context, PathPromptOptions, Pixels, Point, Window};
-
 use crate::{
     Ashell, SftpContextMenuState,
     sftp::{RemoteEntry, SftpHandle},
     terminal,
 };
+use gpui::{Context, PathPromptOptions, Pixels, Point, Window};
 
 pub(crate) fn is_editable_text_file(filename: &str) -> bool {
     let lower = filename.to_lowercase();
@@ -304,15 +303,21 @@ impl Ashell {
         }
     }
 
-    pub(crate) fn toggle_all_sftp_entries(&mut self, checked: bool, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_sftp_entries(
+        &mut self,
+        paths: Vec<String>,
+        checked: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(sftp) = self.active_sftp_mut() {
             if checked {
-                let paths: Vec<String> = sftp.entries.iter().map(|e| e.full_path.clone()).collect();
                 for path in paths {
                     sftp.selected_entries.insert(path);
                 }
             } else {
-                sftp.selected_entries.clear();
+                for path in paths {
+                    sftp.selected_entries.remove(&path);
+                }
             }
             cx.notify();
         }

@@ -14,7 +14,7 @@ use flate2::read::GzDecoder;
 use russh::{
     Disconnect,
     client::{self, Handler},
-    keys::{PrivateKey, decode_secret_key, load_secret_key},
+    keys::{HashAlg, PrivateKey, decode_secret_key, key::PrivateKeyWithHashAlg, load_secret_key},
 };
 use russh_sftp::client::SftpSession;
 use tokio::{
@@ -29,13 +29,7 @@ use zip::read::ZipArchive;
 use rust_i18n::t;
 
 use crate::{
-    session::{
-        config::{AuthMethod, Session},
-        ssh_keys::{
-            authenticate_with_default_keys, normalize_inline_private_key, private_keys_with_algs,
-            session_has_explicit_key,
-        },
-    },
+    session::config::{AuthMethod, Session},
     terminal::BackendEvent,
 };
 
@@ -532,7 +526,10 @@ async fn run_sftp(
             }
             SftpCommand::EditFile { remote_path } => {
                 let id = uuid::Uuid::new_v4().to_string();
-                let config = crate::session::config::ConfigStore::load().unwrap();
+                let config = crate::session::config::ConfigStore::load().unwrap_or_else(|err| {
+                    tracing::warn!("failed to load config for remote edit: {err:#}");
+                    crate::session::config::ConfigStore::in_memory()
+                });
                 let tmp_dir = config.tmp_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
                 let base = base_name(&remote_path);
                 let local_path = tmp_dir.join(format!("{}-{}", id, base));
@@ -850,106 +847,36 @@ async fn connect_and_authenticate(
             .await
             .context("password authentication failed")?,
         AuthMethod::Key => {
-            let has_explicit_key = session_has_explicit_key(session);
-            let success = if has_explicit_key {
-                let keypair = load_session_private_key(session)?;
-                let keys = private_keys_with_algs(keypair).context("invalid private key")?;
-                let mut success = false;
-                for key in keys {
-                    match handle.authenticate_publickey(&session.user, key).await {
-                        Ok(true) => {
-                            success = true;
-                            break;
-                        }
-                        Ok(false) => {
-                            tracing::debug!(
-                                "[sftp] public key auth failed with algorithm, trying next"
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::debug!("[sftp] public key auth error: {:?}, trying next", e);
-                            continue;
-                        }
+            let keypair = load_session_private_key(session)?;
+            let keys = private_keys_with_algs(keypair).context("invalid private key")?;
+            let mut success = false;
+            for key in keys {
+                match handle.authenticate_publickey(&session.user, key).await {
+                    Ok(true) => {
+                        success = true;
+                        break;
+                    }
+                    Ok(false) => {
+                        tracing::debug!(
+                            "[sftp] public key auth failed with algorithm, trying next"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::debug!("[sftp] public key auth error: {:?}, trying next", e);
+                        continue;
                     }
                 }
-                if !success {
-                    return Err(anyhow!(
-                        "public key authentication failed for {}@{}:{}",
-                        session.user,
-                        session.host,
-                        session.port
-                    ));
-                }
-                success
-            } else {
-                let passphrase = session.passphrase.trim();
-                let passphrase = (!passphrase.is_empty()).then_some(passphrase);
-                let success =
-                    authenticate_with_default_keys(&mut handle, &session.user, passphrase).await?;
-                if !success {
-                    return Err(anyhow!(
-                        "public key authentication failed for {}@{}:{} - no valid default key found in ~/.ssh/",
-                        session.user,
-                        session.host,
-                        session.port
-                    ));
-                }
-                success
-            };
-            success
-        }
-        AuthMethod::Config => {
-            // For Config auth, try the identity file from config entry, or default keys
-            // Note: for Config auth, we never use inline key content
-            let has_explicit_key = !session.private_key_path.trim().is_empty();
-
-            if has_explicit_key {
-                let keypair = load_session_private_key(session)?;
-                let keys = private_keys_with_algs(keypair).context("invalid private key")?;
-                let mut success = false;
-                for key in keys {
-                    match handle.authenticate_publickey(&session.user, key).await {
-                        Ok(true) => {
-                            success = true;
-                            break;
-                        }
-                        Ok(false) => {
-                            tracing::debug!(
-                                "[sftp] public key auth failed with algorithm, trying next"
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::debug!("[sftp] public key auth error: {:?}, trying next", e);
-                            continue;
-                        }
-                    }
-                }
-                if !success {
-                    return Err(anyhow!(
-                        "ssh-config key authentication failed for {}@{}:{}",
-                        session.user,
-                        session.host,
-                        session.port
-                    ));
-                }
-                success
-            } else {
-                let passphrase = session.passphrase.trim();
-                let passphrase = (!passphrase.is_empty()).then_some(passphrase);
-                let success =
-                    authenticate_with_default_keys(&mut handle, &session.user, passphrase).await?;
-                if !success {
-                    return Err(anyhow!(
-                        "ssh-config authentication failed for {}@{}:{} - no valid default key found",
-                        session.user,
-                        session.host,
-                        session.port
-                    ));
-                }
-                success
             }
+            if !success {
+                return Err(anyhow!(
+                    "public key authentication failed for {}@{}:{}",
+                    session.user,
+                    session.host,
+                    session.port
+                ));
+            }
+            success
         }
     };
 
@@ -962,7 +889,6 @@ async fn connect_and_authenticate(
             match session.auth {
                 AuthMethod::Password => "password",
                 AuthMethod::Key => "public key",
-                AuthMethod::Config => "ssh-config",
             },
             session.user,
             session.host,
@@ -1002,6 +928,47 @@ fn load_session_private_key(session: &Session) -> Result<PrivateKey> {
     }
 
     Err(anyhow!(errors.join("; ")))
+}
+
+fn private_keys_with_algs(keypair: PrivateKey) -> Result<Vec<PrivateKeyWithHashAlg>> {
+    let mut algs = Vec::new();
+    let key_arc = Arc::new(keypair);
+
+    if key_arc.algorithm().is_rsa() {
+        if let Ok(k) = PrivateKeyWithHashAlg::new(key_arc.clone(), Some(HashAlg::Sha512)) {
+            algs.push(k);
+        }
+        if let Ok(k) = PrivateKeyWithHashAlg::new(key_arc.clone(), Some(HashAlg::Sha256)) {
+            algs.push(k);
+        }
+        if let Ok(k) = PrivateKeyWithHashAlg::new(key_arc.clone(), None) {
+            algs.push(k);
+        }
+    } else {
+        if let Ok(k) = PrivateKeyWithHashAlg::new(key_arc.clone(), None) {
+            algs.push(k);
+        }
+    }
+
+    if algs.is_empty() {
+        return Err(anyhow!(
+            "Failed to construct PrivateKeyWithHashAlg for any supported hash algorithm"
+        ));
+    }
+
+    Ok(algs)
+}
+
+fn normalize_inline_private_key(value: &str) -> String {
+    let mut normalized = value
+        .trim()
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\r\n", "\n");
+    if !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized
 }
 
 fn expand_key_path(value: &str) -> Option<PathBuf> {
@@ -1631,6 +1598,15 @@ async fn exec_remote_command(
     handle: &russh::client::Handle<SftpClientHandler>,
     command: &str,
 ) -> Result<()> {
+    exec_remote_command_output(handle, command)
+        .await
+        .map(|_| ())
+}
+
+async fn exec_remote_command_output(
+    handle: &russh::client::Handle<SftpClientHandler>,
+    command: &str,
+) -> Result<String> {
     let mut channel = handle
         .channel_open_session()
         .await
@@ -1671,7 +1647,7 @@ async fn exec_remote_command(
     }
 
     match exit_status.unwrap_or(0) {
-        0 => Ok(()),
+        0 => Ok(String::from_utf8_lossy(&stdout).trim().to_string()),
         code => {
             let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&stdout).trim().to_string();

@@ -10,7 +10,11 @@ use alacritty_terminal::{
     grid::{Dimensions, Scroll},
     index::{Column, Line, Point, Side},
     selection::{Selection, SelectionRange, SelectionType},
-    term::{Config, Term, TermMode, cell::Cell, point_to_viewport, viewport_to_point},
+    term::{
+        Config, Term, TermMode,
+        cell::{Cell, Flags, LineLength},
+        point_to_viewport, viewport_to_point,
+    },
     vte::ansi::{CursorShape, Processor},
 };
 use gpui::Keystroke;
@@ -18,6 +22,8 @@ use gpui::Keystroke;
 use crate::session::config::Session;
 use crate::sftp::{PreviewData, RemoteEntry};
 use crate::system::SystemSnapshot;
+
+const DEFAULT_SCROLLBACK_LINES: usize = 50_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabKind {
@@ -116,7 +122,6 @@ impl BackendTx {
 pub struct TerminalTab {
     pub id: String,
     pub title: String,
-    pub dynamic_title: String,
     pub kind: TabKind,
     pub status: String,
     pub connected: bool,
@@ -189,6 +194,11 @@ pub struct SftpUiState {
     pub home_dir: String,
 }
 
+pub struct FullGridRow {
+    pub cells: Vec<(i32, char)>,
+    pub wrapped: bool,
+}
+
 impl TerminalTab {
     pub fn new_local(
         id: String,
@@ -239,8 +249,7 @@ impl TerminalTab {
         let shared_backend = std::sync::Arc::new(std::sync::Mutex::new(backend));
         Self {
             id: id.clone(),
-            title: title.clone(),
-            dynamic_title: title,
+            title,
             kind,
             status,
             connected: matches!(kind, TabKind::Local),
@@ -249,7 +258,7 @@ impl TerminalTab {
             backend_initialized: true,
             session: None,
             processor: Processor::new(),
-            term: new_term(100, 30, shared_backend.clone(), id, events.clone()),
+            term: new_term(100, 30, shared_backend.clone(), id, events),
             cols: 100,
             rows: 30,
             backend: shared_backend,
@@ -319,7 +328,7 @@ impl TerminalTab {
         self.term.mode().contains(TermMode::APP_CURSOR)
     }
 
-    pub fn render_snapshot(&self, keyword_highlight: bool) -> RenderSnapshot {
+    pub fn render_snapshot(&self) -> RenderSnapshot {
         let rows = self.rows;
         let cols = self.cols;
         let content = self.term.renderable_content();
@@ -349,7 +358,9 @@ impl TerminalTab {
         }
 
         // Get highlights from cache or recompute, only if keyword_highlight is enabled.
-        let is_enabled = keyword_highlight;
+        let is_enabled = crate::session::config::ConfigStore::load()
+            .map(|c| c.keyword_highlight())
+            .unwrap_or(false);
 
         let highlights = if is_enabled {
             let mut cache = self.highlight_cache.borrow_mut();
@@ -384,30 +395,87 @@ impl TerminalTab {
         }
     }
 
+    pub fn visible_line_text_from(&self, row: usize, start_col: usize) -> Option<String> {
+        let snapshot = self.render_snapshot();
+        if row >= snapshot.rows || start_col >= snapshot.cols {
+            return None;
+        }
+
+        let mut chars = vec![' '; snapshot.cols.saturating_sub(start_col)];
+        for cell in snapshot.cells.iter().filter(|cell| cell.row == row as i32) {
+            let col = cell.col.max(0) as usize;
+            if col < start_col || col >= snapshot.cols {
+                continue;
+            }
+            chars[col - start_col] = cell.cell.c;
+        }
+
+        let text = chars.into_iter().collect::<String>();
+        let text = text.trim_end().to_string();
+        (!text.trim().is_empty()).then_some(text)
+    }
+
+    pub fn current_or_last_visible_line_text(&self) -> Option<String> {
+        let snapshot = self.render_snapshot();
+        if let Some(cursor) = snapshot.cursor {
+            if let Some(text) = Self::line_text_from_snapshot(&snapshot, cursor.row, 0) {
+                return Some(text);
+            }
+        }
+
+        (0..snapshot.rows)
+            .rev()
+            .find_map(|row| Self::line_text_from_snapshot(&snapshot, row, 0))
+    }
+
+    fn line_text_from_snapshot(
+        snapshot: &RenderSnapshot,
+        row: usize,
+        start_col: usize,
+    ) -> Option<String> {
+        if row >= snapshot.rows || start_col >= snapshot.cols {
+            return None;
+        }
+
+        let mut chars = vec![' '; snapshot.cols.saturating_sub(start_col)];
+        for cell in snapshot.cells.iter().filter(|cell| cell.row == row as i32) {
+            let col = cell.col.max(0) as usize;
+            if col < start_col || col >= snapshot.cols {
+                continue;
+            }
+            chars[col - start_col] = cell.cell.c;
+        }
+
+        let text = chars.into_iter().collect::<String>();
+        let text = text.trim_end().to_string();
+        (!text.trim().is_empty()).then_some(text)
+    }
+
     /// Return `(grid_line_base, rows_data)` for the **entire** terminal buffer
     /// including scrollback history. `grid_line_base` is the grid line index of
-    /// the first row (typically `-history_size`). Each entry in `rows_data` is
-    /// a sorted `Vec<(col, char)>` for that row.
-    pub fn full_grid_rows(&self) -> (i32, Vec<Vec<(i32, char)>>) {
+    /// the first row (typically `-history_size`).
+    pub fn full_grid_rows(&self) -> (i32, Vec<FullGridRow>) {
         let grid = self.term.grid();
         let history = grid.history_size() as i32;
         let screen = grid.screen_lines() as i32;
         let total = history + screen;
-        let cols = self.cols as i32;
         let start_line = -history;
 
-        let mut rows_data: Vec<Vec<(i32, char)>> = Vec::with_capacity(total as usize);
+        let mut rows_data: Vec<FullGridRow> = Vec::with_capacity(total as usize);
         for line_idx in start_line..(start_line + total) {
             let line = Line(line_idx);
+            let grid_line = &grid[line];
+            let line_length = grid_line.line_length();
+            let wrapped =
+                line_length.0 > 0 && grid_line[line_length - 1].flags.contains(Flags::WRAPLINE);
             let mut cells: Vec<(i32, char)> = Vec::new();
-            for col_idx in 0..cols {
-                let point = Point::new(line, Column(col_idx as usize));
-                let c = grid[point].c;
-                if c != ' ' && c != '\0' {
-                    cells.push((col_idx, c));
+            for col_idx in 0..line_length.0 {
+                let c = grid_line[Column(col_idx)].c;
+                if c != '\0' {
+                    cells.push((col_idx as i32, c));
                 }
             }
-            rows_data.push(cells);
+            rows_data.push(FullGridRow { cells, wrapped });
         }
         (start_line, rows_data)
     }
@@ -428,6 +496,18 @@ impl TerminalTab {
         if lines != 0 {
             self.term.scroll_display(Scroll::Delta(-(lines as i32)));
         }
+    }
+
+    pub fn scroll_page_up(&mut self) {
+        self.term.scroll_display(Scroll::PageUp);
+    }
+
+    pub fn scroll_page_down(&mut self) {
+        self.term.scroll_display(Scroll::PageDown);
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        self.term.scroll_display(Scroll::Top);
     }
 
     pub fn scroll_to_bottom(&mut self) {
@@ -590,7 +670,7 @@ fn new_term(
 ) -> Term<TerminalListener> {
     Term::new(
         Config {
-            scrolling_history: 2000,
+            scrolling_history: DEFAULT_SCROLLBACK_LINES,
             ..Config::default()
         },
         &TerminalSize::new(cols, rows),

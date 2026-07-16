@@ -2,7 +2,6 @@ pub mod config_sync;
 pub mod constants;
 pub mod dialogs;
 pub mod keybinding_recorder;
-pub mod resizable;
 pub mod search;
 pub mod startup;
 pub mod theme;
@@ -17,7 +16,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::app::resizable::ResizableState;
 use gpui::{
     AppContext as _, Bounds, Context, Entity, FocusHandle, Pixels, Point, SharedString, Size,
     UniformListScrollHandle, Window, point, px, size,
@@ -25,6 +23,7 @@ use gpui::{
 use gpui_component::{
     Theme, ThemeMode, ThemeRegistry,
     input::{InputEvent, InputState},
+    resizable::ResizableState,
     scroll::ScrollbarHandle,
 };
 use rust_i18n::t;
@@ -32,20 +31,22 @@ use tokio::runtime::Runtime;
 
 use crate::{
     session::config::{AuthMethod, ConfigStore},
-    session::ssh_config::SshConfigEntry,
     system::{SystemSampler, SystemSnapshot},
     terminal::{self, BackendEvent, TabKind, TerminalTab},
 };
 
+const MAX_BACKEND_EVENTS_PER_FRAME: usize = 512;
+const MAX_TERMINAL_OUTPUT_BYTES_PER_FRAME: usize = 4 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
-pub(crate) enum PaneLayout {
+pub enum PaneLayout {
     Single(String),
     Horizontal(Vec<PaneLayout>, f32), // children, split_ratio (0.0-1.0)
     Vertical(Vec<PaneLayout>, f32),   // children, split_ratio (0.0-1.0)
 }
 
 #[derive(Clone)]
-pub(crate) struct TabGroup {
+pub struct TabGroup {
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) pane_root: PaneLayout,
@@ -140,6 +141,13 @@ pub(crate) struct TerminalScrollbarState {
 }
 
 #[derive(Clone, Default)]
+pub(crate) struct CommandInputState {
+    pub(crate) typed: String,
+    pub(crate) start_row: Option<usize>,
+    pub(crate) start_col: Option<usize>,
+}
+
+#[derive(Clone, Default)]
 pub(crate) struct TerminalScrollbarHandle {
     state: Rc<RefCell<Option<TerminalScrollbarState>>>,
     pub(crate) future_display_offset: Rc<Cell<Option<usize>>>,
@@ -199,13 +207,16 @@ pub(crate) enum DialogKind {
     SessionSelector,
     Transfers,
     NewSsh,
+    CommandHistory,
+    QuickCommands,
 }
 
-pub(crate) struct Ashell {
+pub struct Ashell {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) selector_focus_handle: FocusHandle,
     pub(crate) host_input: Entity<InputState>,
     pub(crate) session_name_input: Entity<InputState>,
+    pub(crate) session_group_input: Entity<InputState>,
     pub(crate) port_input: Entity<InputState>,
     pub(crate) user_input: Entity<InputState>,
     pub(crate) password_input: Entity<InputState>,
@@ -217,6 +228,11 @@ pub(crate) struct Ashell {
     pub(crate) proxy_port_input: Entity<InputState>,
     pub(crate) proxy_user_input: Entity<InputState>,
     pub(crate) proxy_password_input: Entity<InputState>,
+    pub(crate) command_history_input: Entity<InputState>,
+    pub(crate) quick_command_search_input: Entity<InputState>,
+    pub(crate) quick_command_name_input: Entity<InputState>,
+    pub(crate) quick_command_value_input: Entity<InputState>,
+    pub(crate) session_filter_input: Entity<InputState>,
     pub(crate) global_proxy_type: String,
     pub(crate) global_proxy_host_input: Entity<InputState>,
     pub(crate) global_proxy_port_input: Entity<InputState>,
@@ -236,9 +252,8 @@ pub(crate) struct Ashell {
     pub(crate) sync_in_progress: bool,
     pub(crate) sync_status: SharedString,
     pub(crate) sftp_path_input: Entity<InputState>,
+    pub(crate) sftp_filter_input: Entity<InputState>,
     pub(crate) ssh_auth_method: AuthMethod,
-    pub(crate) ssh_config_entries: Vec<SshConfigEntry>,
-    pub(crate) ssh_config_selected: Option<usize>,
     pub(crate) editing_session_id: Option<String>,
     pub(crate) follow_system_theme: bool,
     pub(crate) theme_mode: ThemeMode,
@@ -278,6 +293,7 @@ pub(crate) struct Ashell {
     pub(crate) focused_pane_path: Vec<usize>,
     pub(crate) terminal_panel_bounds: Option<Bounds<Pixels>>,
     pub(crate) terminal_bounds: HashMap<String, Bounds<Pixels>>,
+    pub(crate) command_buffers: HashMap<String, CommandInputState>,
     pub(crate) terminal_selecting: bool,
     pub(crate) dragging_splitter: Option<(Vec<usize>, usize)>, // (parent_path, child_index)
     pub(crate) drag_split_origin: Option<gpui::Point<Pixels>>,
@@ -321,21 +337,11 @@ pub(crate) struct Ashell {
     pub(crate) events_tx: mpsc::Sender<BackendEvent>,
     pub(crate) last_window_size: Option<gpui::Size<Pixels>>,
     pub(crate) last_sidebar_width: Option<Pixels>,
-    pub(crate) should_move_window: bool,
-    pub(crate) hovered_url: Option<HoveredUrl>,
-    pub(crate) cmd_ctrl_pressed: bool,
     pub(crate) _subscriptions: Vec<gpui::Subscription>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct HoveredUrl {
-    pub(crate) url: String,
-    pub(crate) tab_id: String,
-    pub(crate) cells: Vec<(usize, usize)>,
-}
-
 #[derive(Clone)]
-pub(crate) enum SelectorEntry {
+pub enum SelectorEntry {
     Local,
     NewSsh,
     Saved(String),
@@ -350,7 +356,7 @@ pub(crate) struct ConnectionProgress {
 }
 
 #[derive(Clone)]
-pub(crate) struct SftpContextMenuState {
+pub struct SftpContextMenuState {
     pub(crate) remote_path: String,
     pub(crate) is_dir: bool,
     pub(crate) position: Point<Pixels>,
@@ -381,6 +387,8 @@ impl Ashell {
         let host_input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("host")));
         let session_name_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("name (optional)"));
+        let session_group_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("session_group").to_string()));
         let port_input = cx.new(|cx| InputState::new(window, cx).default_value("22"));
         let user_input = cx.new(|cx| InputState::new(window, cx).default_value("root"));
         let password_input = cx.new(|cx| {
@@ -412,7 +420,24 @@ impl Ashell {
                 .placeholder(t!("proxy_password").to_string())
                 .masked(true)
         });
+        let command_history_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
+        let quick_command_search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("search").to_string()));
+        let quick_command_name_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("quick_command_name").to_string())
+        });
+        let quick_command_value_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("quick_command_value").to_string())
+                .multi_line(true)
+                .rows(3)
+        });
+        let session_filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("filter_sessions").to_string()));
         let sftp_path_input = cx.new(|cx| InputState::new(window, cx).default_value("/"));
+        let sftp_filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("filter_files").to_string()));
         let sftp_new_folder_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("new_folder").to_string()));
         let search_input =
@@ -504,6 +529,7 @@ impl Ashell {
         let _subscriptions = vec![
             cx.subscribe_in(&host_input, window, Self::on_input_event),
             cx.subscribe_in(&session_name_input, window, Self::on_input_event),
+            cx.subscribe_in(&session_group_input, window, Self::on_input_event),
             cx.subscribe_in(&port_input, window, Self::on_input_event),
             cx.subscribe_in(&user_input, window, Self::on_input_event),
             cx.subscribe_in(&password_input, window, Self::on_input_event),
@@ -514,7 +540,13 @@ impl Ashell {
             cx.subscribe_in(&proxy_port_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_user_input, window, Self::on_input_event),
             cx.subscribe_in(&proxy_password_input, window, Self::on_input_event),
+            cx.subscribe_in(&command_history_input, window, Self::on_input_event),
+            cx.subscribe_in(&quick_command_search_input, window, Self::on_input_event),
+            cx.subscribe_in(&quick_command_name_input, window, Self::on_input_event),
+            cx.subscribe_in(&quick_command_value_input, window, Self::on_input_event),
+            cx.subscribe_in(&session_filter_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_path_input, window, Self::on_input_event),
+            cx.subscribe_in(&sftp_filter_input, window, Self::on_input_event),
             cx.subscribe_in(&sftp_new_folder_input, window, Self::on_input_event),
             cx.subscribe_in(&search_input, window, Self::on_input_event),
             cx.subscribe_in(&sync_endpoint_input, window, Self::on_input_event),
@@ -582,6 +614,7 @@ impl Ashell {
             selector_focus_handle: cx.focus_handle(),
             host_input,
             session_name_input,
+            session_group_input,
             port_input,
             user_input,
             password_input,
@@ -593,6 +626,11 @@ impl Ashell {
             proxy_port_input,
             proxy_user_input,
             proxy_password_input,
+            command_history_input,
+            quick_command_search_input,
+            quick_command_name_input,
+            quick_command_value_input,
+            session_filter_input,
             global_proxy_type: config.global_proxy_type().to_string(),
             global_proxy_host_input,
             global_proxy_port_input,
@@ -612,9 +650,8 @@ impl Ashell {
             sync_in_progress: false,
             sync_status: t!("sync_not_run").into(),
             sftp_path_input,
+            sftp_filter_input,
             ssh_auth_method: AuthMethod::Password,
-            ssh_config_entries: crate::session::ssh_config::parse_ssh_config().unwrap_or_default(),
-            ssh_config_selected: None,
             editing_session_id: None,
             follow_system_theme,
             theme_mode,
@@ -668,6 +705,7 @@ impl Ashell {
             show_transfers_dialog: false,
             system_status: None,
             terminal_bounds: HashMap::new(),
+            command_buffers: HashMap::new(),
             terminal_selecting: false,
             terminal_marked_text: None,
             dragging_splitter: None,
@@ -708,9 +746,6 @@ impl Ashell {
             events_tx,
             last_window_size: None,
             last_sidebar_width,
-            should_move_window: false,
-            hovered_url: None,
-            cmd_ctrl_pressed: false,
             _subscriptions,
         };
 
@@ -826,10 +861,19 @@ impl Ashell {
     pub(crate) fn drain_backend_events(&mut self) -> bool {
         let mut changed = false;
         let mut transfers_changed = false;
-        while let Ok(event) = self.events_rx.try_recv() {
+        let mut event_count = 0usize;
+        let mut output_bytes = 0usize;
+        while event_count < MAX_BACKEND_EVENTS_PER_FRAME
+            && output_bytes < MAX_TERMINAL_OUTPUT_BYTES_PER_FRAME
+        {
+            let Ok(event) = self.events_rx.try_recv() else {
+                break;
+            };
+            event_count += 1;
             changed = true;
             match event {
                 BackendEvent::Output { tab_id, bytes } => {
+                    output_bytes += bytes.len();
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
                         tab.backend_initialized = true;
                         tab.feed(&bytes);
@@ -1010,7 +1054,7 @@ impl Ashell {
                 }
                 BackendEvent::TerminalTitleChanged { tab_id, title } => {
                     if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-                        tab.dynamic_title = title;
+                        tab.title = title.clone();
                     }
                 }
                 BackendEvent::SyncFinished(result) => {
@@ -1226,73 +1270,6 @@ impl Ashell {
             self.handle_tab_close(tab_id);
         }
         cx.notify();
-    }
-
-    pub(crate) fn sync_cwd_from_terminal(
-        &mut self,
-        _window: &mut gpui::Window,
-        _cx: &mut Context<Self>,
-    ) {
-        let active_id = self.active_tab.clone();
-        let Some(active_id) = active_id else {
-            return;
-        };
-
-        if let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) {
-            let home_dir = if let Some(group) = self
-                .tab_groups
-                .iter()
-                .find(|g| g.pane_root.contains(&tab.id))
-            {
-                group
-                    .sftp
-                    .as_ref()
-                    .map(|s| s.home_dir.as_str())
-                    .unwrap_or("/")
-            } else {
-                "/"
-            };
-
-            let parsed = Self::parse_path_from_title(&tab.dynamic_title, home_dir);
-
-            if let Some(path) = parsed {
-                if let Some(group) = self
-                    .tab_groups
-                    .iter_mut()
-                    .find(|g| g.pane_root.contains(&active_id))
-                {
-                    if let Some(sftp) = group.sftp.as_mut() {
-                        sftp.current_path = path.clone();
-                        self.pending_sftp_path_sync = Some(path.clone());
-                        if let Some(handle) = self.sftp_handles.get(&group.id) {
-                            let _ = handle
-                                .commands
-                                .send(crate::sftp::SftpCommand::ListDir(path));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn parse_path_from_title(title: &str, home_dir: &str) -> Option<String> {
-        let title = title.strip_prefix("ASHELL_CWD:").unwrap_or(title);
-        let path_part = if let Some(pos) = title.find(':') {
-            title[pos + 1..].trim()
-        } else {
-            title.trim()
-        };
-
-        if path_part.starts_with('/') {
-            Some(path_part.to_string())
-        } else if path_part == "~" {
-            Some(home_dir.to_string())
-        } else if let Some(rest) = path_part.strip_prefix("~/") {
-            let home = home_dir.trim_end_matches('/');
-            Some(format!("{}/{}", home, rest))
-        } else {
-            None
-        }
     }
 
     pub(crate) fn save_layout_state(&self, window: &mut gpui::Window, cx: &gpui::App) {

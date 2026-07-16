@@ -1,31 +1,19 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use gpui::KeyBinding;
 use gpui_component_assets::Assets;
 
-mod app;
-mod backend;
-mod session;
-mod sftp;
-mod sync;
-mod system;
-mod terminal;
-
-rust_i18n::i18n!("locales", fallback = "en");
-
-gpui::actions!(ashell_terminal, [TerminalTabKey, TerminalBacktabKey]);
-
-pub(crate) use app::keybinding_recorder::{
-    ClosePane, Copy, FocusPaneDown, FocusPaneLeft, FocusPaneRight, FocusPaneUp, NewSsh, OpenSearch,
-    OpenSession, OpenSettings, OpenTransfers, Paste, SplitPaneDown, SplitPaneLeft, SplitPaneRight,
-    SplitPaneUp, ToggleSftpZoom, ToggleSidebar,
-};
-
-pub(crate) use app::{Ashell, PaneLayout, SelectorEntry, SftpContextMenuState, TabGroup};
+use ashell::{TerminalBacktabKey, TerminalTabKey, app, client};
 
 fn main() {
     app::startup::sync_macos_launch_environment();
     app::startup::init_logging();
+    app::startup::init_panic_logging();
+
+    if client::is_client_mode() {
+        client::attach_parent_console();
+        std::process::exit(client::run_blocking());
+    }
 
     #[cfg(target_os = "macos")]
     let app = gpui_platform::application()

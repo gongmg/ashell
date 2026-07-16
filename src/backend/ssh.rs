@@ -9,21 +9,19 @@ use directories::BaseDirs;
 use russh::{
     ChannelMsg, Disconnect,
     client::{self, Handler},
-    keys::{PrivateKey, decode_secret_key, load_secret_key},
+    keys::{HashAlg, PrivateKey, decode_secret_key, key::PrivateKeyWithHashAlg, load_secret_key},
 };
 use tokio::sync::mpsc;
 
 use crate::{
-    session::{
-        config::{AuthMethod, Session},
-        ssh_keys::{
-            authenticate_with_default_keys, normalize_inline_private_key, private_keys_with_algs,
-            session_has_explicit_key,
-        },
-    },
+    session::config::{AuthMethod, Session},
     system::{SystemSnapshot, remote_snapshot_from_kv},
     terminal::{BackendCommand, BackendEvent, BackendTx},
 };
+
+pub(crate) struct SshExecOutput {
+    pub exit_status: Option<u32>,
+}
 
 pub fn spawn_ssh_terminal(
     runtime: &tokio::runtime::Handle,
@@ -279,12 +277,7 @@ async fn connect_and_authenticate(
                 .context("password authentication failed")?
         }
         AuthMethod::Key => {
-            let has_explicit_key = session_has_explicit_key(session);
-            let source = if has_explicit_key {
-                key_source_label(session)
-            } else {
-                "~/.ssh/ default keys".to_string()
-            };
+            let source = key_source_label(session);
             tracing::info!(
                 "[ssh] sending key authentication for {}@{} (key source: {})",
                 session.user,
@@ -293,142 +286,43 @@ async fn connect_and_authenticate(
             );
             let _ = events.send(BackendEvent::Status {
                 tab_id: tab_id.to_string(),
-                text: if has_explicit_key {
-                    format!("connected to {addr}, loading private key from {source}")
-                } else {
-                    format!(
-                        "connected to {addr}, trying default keys from ~/.ssh/ for {}",
-                        session.user
-                    )
-                },
-            });
-
-            let passphrase = session.passphrase.trim();
-            let passphrase = (!passphrase.is_empty()).then_some(passphrase);
-
-            let success = if has_explicit_key {
-                let keypair = load_session_private_key(session)?;
-                let algorithm = format!("{:?}", keypair.algorithm());
-                let _ = events.send(BackendEvent::Status {
-                    tab_id: tab_id.to_string(),
-                    text: format!("private key loaded from {source}, algorithm {algorithm}, sending public key authentication for {}", session.user),
-                });
-                let keys = private_keys_with_algs(keypair).context("invalid private key")?;
-                let mut success = false;
-                for key in keys {
-                    match handle.authenticate_publickey(&session.user, key).await {
-                        Ok(true) => {
-                            success = true;
-                            break;
-                        }
-                        Ok(false) => {
-                            tracing::debug!(
-                                "[ssh] public key auth failed with algorithm, trying next"
-                            );
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::debug!("[ssh] public key auth error: {:?}, trying next", e);
-                            continue;
-                        }
-                    }
-                }
-                if !success {
-                    return Err(anyhow::anyhow!(
-                        "public key authentication failed for {}@{}:{} using {} ({})",
-                        session.user,
-                        session.host,
-                        session.port,
-                        source,
-                        algorithm
-                    ));
-                }
-                success
-            } else {
-                let success =
-                    authenticate_with_default_keys(&mut handle, &session.user, passphrase).await?;
-                if !success {
-                    return Err(anyhow::anyhow!(
-                        "public key authentication failed for {}@{}:{} - no valid default key found in ~/.ssh/",
-                        session.user,
-                        session.host,
-                        session.port
-                    ));
-                }
-                success
-            };
-            success
-        }
-        AuthMethod::Config => {
-            // SSH Config auth: try the identity file from config, or default keys
-            let source = key_source_label(session);
-            tracing::info!(
-                "[ssh] sending ssh-config authentication for {}@{} (key source: {})",
-                session.user,
-                addr,
-                source
-            );
-            let _ = events.send(BackendEvent::Status {
-                tab_id: tab_id.to_string(),
                 text: format!("connected to {addr}, loading private key from {source}"),
             });
-
-            // If an explicit key path is set from the SSH config IdentityFile, use it;
-            // otherwise try default keys from ~/.ssh/
-            // Note: for Config auth, we never use inline key content
-            let has_explicit_key = !session.private_key_path.trim().is_empty();
-            if has_explicit_key {
-                let keypair = load_session_private_key(session)?;
-                let algorithm = format!("{:?}", keypair.algorithm());
-                let keys = private_keys_with_algs(keypair).context("invalid private key")?;
-                let mut success = false;
-                for key in keys {
-                    match handle.authenticate_publickey(&session.user, key).await {
-                        Ok(true) => {
-                            success = true;
-                            break;
-                        }
-                        Ok(false) => {
-                            continue;
-                        }
-                        Err(_) => {
-                            continue;
-                        }
+            let keypair = load_session_private_key(session)?;
+            let algorithm = format!("{:?}", keypair.algorithm());
+            let _ = events.send(BackendEvent::Status {
+                tab_id: tab_id.to_string(),
+                text: format!("private key loaded from {source}, algorithm {algorithm}, sending public key authentication for {}", session.user),
+            });
+            let keys = private_keys_with_algs(keypair).context("invalid private key")?;
+            let mut success = false;
+            for key in keys {
+                match handle.authenticate_publickey(&session.user, key).await {
+                    Ok(true) => {
+                        success = true;
+                        break;
+                    }
+                    Ok(false) => {
+                        tracing::debug!("[ssh] public key auth failed with algorithm, trying next");
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::debug!("[ssh] public key auth error: {:?}, trying next", e);
+                        continue;
                     }
                 }
-                if !success {
-                    return Err(anyhow::anyhow!(
-                        "ssh-config key authentication failed for {}@{}:{} using {} ({})",
-                        session.user,
-                        session.host,
-                        session.port,
-                        source,
-                        algorithm
-                    ));
-                }
-                success
-            } else {
-                let passphrase = session.passphrase.trim();
-                let passphrase = (!passphrase.is_empty()).then_some(passphrase);
-                let _ = events.send(BackendEvent::Status {
-                    tab_id: tab_id.to_string(),
-                    text: format!(
-                        "connected to {addr}, trying default keys from ~/.ssh/ for {}",
-                        session.user
-                    ),
-                });
-                let success =
-                    authenticate_with_default_keys(&mut handle, &session.user, passphrase).await?;
-                if !success {
-                    return Err(anyhow::anyhow!(
-                        "ssh-config authentication failed for {}@{}:{} - no valid default key found",
-                        session.user,
-                        session.host,
-                        session.port
-                    ));
-                }
-                success
             }
+            if !success {
+                return Err(anyhow::anyhow!(
+                    "public key authentication failed for {}@{}:{} using {} ({})",
+                    session.user,
+                    session.host,
+                    session.port,
+                    source,
+                    algorithm
+                ));
+            }
+            success
         }
     };
 
@@ -451,10 +345,6 @@ async fn connect_and_authenticate(
                     session.port,
                     key_source_label(session)
                 ),
-                AuthMethod::Config => format!(
-                    "authentication failed: server rejected ssh-config authentication for {}@{}:{}",
-                    session.user, session.host, session.port
-                ),
             }
         ));
     }
@@ -474,6 +364,65 @@ async fn connect_and_authenticate(
     });
 
     Ok(handle)
+}
+
+pub(crate) async fn exec_ssh_command_streaming(
+    session: &Session,
+    command: &str,
+    mut on_stdout: impl FnMut(&[u8]) -> std::io::Result<()>,
+    mut on_stderr: impl FnMut(&[u8]) -> std::io::Result<()>,
+) -> Result<SshExecOutput> {
+    let (events, _rx) = std::sync::mpsc::channel();
+    let handle = connect_and_authenticate("client", session, &events).await?;
+    let mut channel = handle
+        .channel_open_session()
+        .await
+        .context("open exec session")?;
+    channel
+        .exec(true, command)
+        .await
+        .with_context(|| format!("exec remote command: {command}"))?;
+
+    let mut exit_status = None;
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+
+    loop {
+        tokio::select! {
+            msg = channel.wait() => {
+                let Some(msg) = msg else {
+                    break;
+                };
+                match msg {
+                    ChannelMsg::Data { data } => {
+                        on_stdout(&data).context("write command stdout")?;
+                    }
+                    ChannelMsg::ExtendedData { data, ext: _ } => {
+                        on_stderr(&data).context("write command stderr")?;
+                    }
+                    ChannelMsg::ExitStatus {
+                        exit_status: status,
+                    } => exit_status = Some(status),
+                    ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+            _ = &mut ctrl_c => {
+                exit_status = Some(130);
+                let _ = channel.eof().await;
+                let _ = channel.close().await;
+                break;
+            }
+        }
+    }
+
+    let _ = handle
+        .disconnect(Disconnect::ByApplication, "bye", "")
+        .await;
+
+    Ok(SshExecOutput {
+        exit_status,
+    })
 }
 
 fn load_session_private_key(session: &Session) -> Result<PrivateKey> {
@@ -505,6 +454,47 @@ fn load_session_private_key(session: &Session) -> Result<PrivateKey> {
     }
 
     Err(anyhow!(errors.join("; ")))
+}
+
+fn private_keys_with_algs(keypair: PrivateKey) -> Result<Vec<PrivateKeyWithHashAlg>> {
+    let mut algs = Vec::new();
+    let key_arc = Arc::new(keypair);
+
+    if key_arc.algorithm().is_rsa() {
+        if let Ok(k) = PrivateKeyWithHashAlg::new(key_arc.clone(), Some(HashAlg::Sha512)) {
+            algs.push(k);
+        }
+        if let Ok(k) = PrivateKeyWithHashAlg::new(key_arc.clone(), Some(HashAlg::Sha256)) {
+            algs.push(k);
+        }
+        if let Ok(k) = PrivateKeyWithHashAlg::new(key_arc.clone(), None) {
+            algs.push(k);
+        }
+    } else {
+        if let Ok(k) = PrivateKeyWithHashAlg::new(key_arc.clone(), None) {
+            algs.push(k);
+        }
+    }
+
+    if algs.is_empty() {
+        return Err(anyhow!(
+            "Failed to construct PrivateKeyWithHashAlg for any supported hash algorithm"
+        ));
+    }
+
+    Ok(algs)
+}
+
+fn normalize_inline_private_key(value: &str) -> String {
+    let mut normalized = value
+        .trim()
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\r\n", "\n");
+    if !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
+    normalized
 }
 
 fn expand_key_path(value: &str) -> Option<PathBuf> {

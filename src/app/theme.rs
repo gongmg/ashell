@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) static USING_SYSTEM_MAPLE: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn load_fonts(cx: &mut App) -> Result<()> {
+pub fn load_fonts(cx: &mut App) -> Result<()> {
     let has_system_maple = cx
         .text_system()
         .all_font_names()
@@ -38,7 +38,7 @@ pub(crate) fn load_fonts(cx: &mut App) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn load_embedded_themes(cx: &mut App) {
+pub fn load_embedded_themes(cx: &mut App) {
     let registry = ThemeRegistry::global_mut(cx);
     for theme_json in EMBEDDED_THEME_JSONS {
         if let Err(err) = registry.load_themes_from_str(theme_json) {

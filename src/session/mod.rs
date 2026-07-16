@@ -1,10 +1,8 @@
 pub mod config;
-pub mod ssh_config;
-pub mod ssh_keys;
 
 use gpui::{
-    AppContext as _, Context, Entity, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    SharedString, Window, px,
+    App, AppContext as _, Context, Entity, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, SharedString, Window, px,
 };
 use gpui_component::{Theme, WindowExt as _, input::InputState};
 use rust_i18n::t;
@@ -14,7 +12,10 @@ use self::config::{AuthMethod, Session};
 
 use crate::{
     Ashell, PaneLayout, SelectorEntry, TabGroup,
-    app::constants::{DEFAULT_COLS, DEFAULT_ROWS},
+    app::constants::{
+        DEFAULT_COLS, DEFAULT_ROWS, SIDEBAR_WIDTH, TAB_BAR_HEIGHT, TERMINAL_PADDING_X,
+        TERMINAL_PADDING_Y,
+    },
     backend::{local, ssh},
     terminal::{BackendCommand, RenderSnapshot, TabKind, TerminalTab},
 };
@@ -58,6 +59,7 @@ impl Ashell {
     pub(crate) fn connect_ssh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         tracing::info!("[ui] user initiating new ssh connection from form");
         let session_name = self.session_name_input.read(cx).value().trim().to_string();
+        let session_group = self.session_group_input.read(cx).value().trim().to_string();
         let host = self.host_input.read(cx).value().trim().to_string();
         let port = self
             .port_input
@@ -102,17 +104,17 @@ impl Ashell {
 
         let mut session = match self.ssh_auth_method {
             AuthMethod::Password => Session::password(host, port, user, password),
-            AuthMethod::Key => Session::key(host, port, user, key_path, key_inline, passphrase),
-            AuthMethod::Config => {
-                // Force key_inline to empty — config mode never uses inline key content.
-                // The backend will try default keys from ~/.ssh/ if no explicit key path is set.
-                let mut session =
-                    Session::key(host, port, user, key_path, String::new(), String::new());
-                session.auth = AuthMethod::Config;
-                session
+            AuthMethod::Key => {
+                if key_path.is_empty() && key_inline.trim().is_empty() {
+                    self.status = "private key path or content is required".into();
+                    cx.notify();
+                    return;
+                }
+                Session::key(host, port, user, key_path, key_inline, passphrase)
             }
         };
         session.name = name;
+        session.group = session_group;
         if let Some(id) = existing_id {
             session.id = id;
         }
@@ -129,6 +131,13 @@ impl Ashell {
         session.proxy_user = self.proxy_user_input.read(cx).value().trim().to_string();
         session.proxy_password = self.proxy_password_input.read(cx).value().to_string();
         self.config.upsert(session.clone());
+        if self.ssh_auth_method == AuthMethod::Password && !session.password.is_empty() {
+            self.config.upsert_credential_profile(
+                session.name.clone(),
+                session.user.clone(),
+                session.password.clone(),
+            );
+        }
         if let Err(err) = self.config.save() {
             tracing::warn!("failed to save config: {err:#}");
         }
@@ -152,8 +161,8 @@ impl Ashell {
     pub(crate) fn reset_ssh_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editing_session_id = None;
         self.ssh_auth_method = AuthMethod::Password;
-        self.ssh_config_selected = None;
         Self::set_input_value(&self.session_name_input, "", window, cx);
+        Self::set_input_value(&self.session_group_input, "", window, cx);
         Self::set_input_value(&self.host_input, "", window, cx);
         Self::set_input_value(&self.port_input, "22", window, cx);
         Self::set_input_value(&self.user_input, "root", window, cx);
@@ -177,6 +186,7 @@ impl Ashell {
         self.editing_session_id = Some(session.id.clone());
         self.ssh_auth_method = session.auth;
         Self::set_input_value(&self.session_name_input, session.name.clone(), window, cx);
+        Self::set_input_value(&self.session_group_input, session.group.clone(), window, cx);
         Self::set_input_value(&self.host_input, session.host.clone(), window, cx);
         Self::set_input_value(&self.port_input, session.port.to_string(), window, cx);
         Self::set_input_value(&self.user_input, session.user.clone(), window, cx);
@@ -374,67 +384,40 @@ impl Ashell {
         let _ = self.config.save();
 
         self.is_layout_reset = true;
-        self.workspace_panels = cx.new(|_| crate::app::resizable::ResizableState::default());
-        self.body_panels = cx.new(|_| crate::app::resizable::ResizableState::default());
+        self.workspace_panels = cx.new(|_| gpui_component::resizable::ResizableState::default());
+        self.body_panels = cx.new(|_| gpui_component::resizable::ResizableState::default());
 
         cx.notify();
     }
 
     pub(crate) fn set_ssh_auth_method(&mut self, method: AuthMethod, cx: &mut Context<Self>) {
         self.ssh_auth_method = method;
-        if method == AuthMethod::Config {
-            self.refresh_ssh_config();
-            self.ssh_config_selected = None;
-        }
         cx.notify();
-    }
-
-    pub(crate) fn refresh_ssh_config(&mut self) {
-        self.ssh_config_entries =
-            crate::session::ssh_config::parse_ssh_config().unwrap_or_default();
-    }
-
-    pub(crate) fn select_ssh_config_entry(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.ssh_config_selected = Some(index);
-        if let Some(entry) = self.ssh_config_entries.get(index) {
-            Self::set_input_value(
-                &self.session_name_input,
-                entry.host_alias.clone(),
-                window,
-                cx,
-            );
-            Self::set_input_value(&self.host_input, entry.hostname.clone(), window, cx);
-            Self::set_input_value(&self.port_input, entry.port.to_string(), window, cx);
-            // If no user specified in config, use current system user
-            let user = if entry.user.is_empty() {
-                std::env::var("USER")
-                    .or_else(|_| std::env::var("USERNAME"))
-                    .unwrap_or_else(|_| "root".to_string())
-            } else {
-                entry.user.clone()
-            };
-            Self::set_input_value(&self.user_input, user, window, cx);
-            Self::set_input_value(
-                &self.key_path_input,
-                entry.identity_files.first().cloned().unwrap_or_default(),
-                window,
-                cx,
-            );
-            Self::set_input_value(&self.password_input, String::new(), window, cx);
-            Self::set_input_value(&self.key_inline_input, String::new(), window, cx);
-            Self::set_input_value(&self.passphrase_input, String::new(), window, cx);
-            // Auto-connect on selection
-            self.connect_ssh(window, cx);
-        }
     }
 
     pub(crate) fn set_ssh_proxy_type(&mut self, proxy_type: String, cx: &mut Context<Self>) {
         self.ssh_proxy_type = proxy_type;
+        cx.notify();
+    }
+
+    pub(crate) fn apply_credential_profile(
+        &mut self,
+        profile_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(profile) = self
+            .config
+            .credential_profiles()
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.ssh_auth_method = AuthMethod::Password;
+        Self::set_input_value(&self.user_input, profile.user, window, cx);
+        Self::set_input_value(&self.password_input, profile.password, window, cx);
         cx.notify();
     }
 
@@ -783,13 +766,6 @@ impl Ashell {
     }
 
     pub(crate) fn handle_tab_close(&mut self, id: String) {
-        if self
-            .connection_progress
-            .as_ref()
-            .map_or(false, |p| p.tab_id == id)
-        {
-            self.connection_progress = None;
-        }
         let group_ix = self
             .tab_groups
             .iter()
@@ -867,7 +843,14 @@ impl Ashell {
             if let Some(handle) = self.sftp_handles.remove(&group.id) {
                 handle.close();
             }
-            self.tab_groups.remove(group_ix.unwrap());
+            if let Some(group_ix) = group_ix {
+                self.tab_groups.remove(group_ix);
+            } else {
+                tracing::warn!(
+                    "[handle_tab_close] group index disappeared while closing tab '{}'",
+                    id
+                );
+            }
             self.pane_root.remove_tab(&id);
         } else {
             // Just remove this tab from the group
@@ -973,21 +956,6 @@ impl Ashell {
             }
         }
         if event.button == MouseButton::Left {
-            if event.modifiers.platform {
-                if let Some((row, col, _side)) = self.terminal_grid_point_and_side(event.position) {
-                    if let Some(snapshot) = self.active_snapshot() {
-                        if let Some((url, _)) = crate::terminal::highlight::find_url_at_cell(
-                            &snapshot.cells,
-                            snapshot.rows,
-                            row,
-                            col,
-                        ) {
-                            let _ = open::that(&url);
-                            return;
-                        }
-                    }
-                }
-            }
             if self.config.right_click_copy_paste() {
                 if let Some(text) = self.active_terminal_selection_text() {
                     if !text.is_empty() {
@@ -1010,7 +978,7 @@ impl Ashell {
         self.active_tab
             .as_ref()
             .and_then(|id| self.tabs.iter().find(|t| &t.id == id))
-            .map(|t| t.render_snapshot(self.config.keyword_highlight()))
+            .map(TerminalTab::render_snapshot)
     }
 
     pub(crate) fn active_kind(&self) -> Option<TabKind> {
@@ -1046,7 +1014,71 @@ impl Ashell {
     }
 
     pub(crate) fn session_detail(&self, session: &Session) -> String {
-        format!("{}@{}:{}", session.user, session.host, session.port)
+        let endpoint = format!("{}@{}:{}", session.user, session.host, session.port);
+        if session.group.trim().is_empty() {
+            endpoint
+        } else {
+            format!("{} / {}", session.group.trim(), endpoint)
+        }
+    }
+
+    pub(crate) fn sync_terminal_size(&mut self, window: &Window, cx: &App) {
+        let viewport = window.viewport_size();
+        let sidebar_width = self
+            .workspace_panels
+            .read(cx)
+            .sizes()
+            .first()
+            .map(|size| size.as_f32())
+            .unwrap_or(SIDEBAR_WIDTH);
+
+        // Use the whole terminal panel bounds for PTY sizing.
+        // Individual pane bounds are smaller when split, so using them here
+        // would shrink the root PTY dimensions a second time.
+        let (width, height) = if let Some(bounds) = self.terminal_panel_bounds {
+            (bounds.size.width.as_f32(), bounds.size.height.as_f32())
+        } else {
+            let terminal_height = self
+                .body_panels
+                .read(cx)
+                .sizes()
+                .first()
+                .map(|size| size.as_f32())
+                .unwrap_or(viewport.height.as_f32() - TAB_BAR_HEIGHT - 248.0);
+            (
+                (viewport.width.as_f32() - sidebar_width - TERMINAL_PADDING_X - 8.0)
+                    .max(self.terminal_cell_width()),
+                (terminal_height - TERMINAL_PADDING_Y).max(self.terminal_line_height()),
+            )
+        };
+        let total_cols = (width / self.terminal_cell_width()).floor().max(1.0) as u16;
+        let total_rows = (height / self.terminal_line_height()).floor().max(1.0) as u16;
+
+        Self::resize_pane_tree(&mut self.tabs, &self.pane_root, total_cols, total_rows);
+    }
+
+    fn resize_pane_tree(tabs: &mut [TerminalTab], layout: &PaneLayout, cols: u16, rows: u16) {
+        match layout {
+            PaneLayout::Single(id) => {
+                if let Some(tab) = tabs.iter_mut().find(|t| t.id == *id) {
+                    tab.resize(cols.max(1), rows.max(1));
+                }
+            }
+            PaneLayout::Horizontal(children, _) => {
+                let n = children.len() as u16;
+                let each_rows = (rows / n).max(1);
+                for child in children {
+                    Self::resize_pane_tree(tabs, child, cols, each_rows);
+                }
+            }
+            PaneLayout::Vertical(children, _) => {
+                let n = children.len() as u16;
+                let each_cols = (cols / n).max(1);
+                for child in children {
+                    Self::resize_pane_tree(tabs, child, each_cols, rows);
+                }
+            }
+        }
     }
 
     pub(crate) fn split_current_pane(&mut self, direction: &str, cx: &mut Context<Self>) {
